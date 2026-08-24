@@ -452,6 +452,41 @@ Design doc: `docs/slice-preview-design.md`.
   the slicer's `Object_N` name, fall back to the numeric id, and cross-check the
   pair's size before quoting a position.
 
+**Parts registry** (`tools_slice._report_to_registry`, called from
+`_run_slice_model`): a best-effort report of one export to a separate,
+standalone project (`~/Repos/print-pipeline`, not part of this addon) that
+tracks 3D-printable parts across repeated exports — a geometry hash per part
+so a dashboard can show what changed since it was last printed, and small
+per-part print-setting overrides (supports/orientation/brim/preset choices)
+that survive a re-export, since they live on the registry's own row rather
+than on any one 3MF. `heli-toy`'s `cad/plate.py` reports into the same
+service independently, over the same HTTP route — this addon and that CAD
+workflow don't know about each other, only about the registry.
+
+- **Off by default, and silently off**: `PartsRegistryUrl` empty (the
+  default) means `_report_to_registry` returns `None` before doing anything —
+  no import, no network attempt, nothing added to `slice_model`'s report. A
+  user who hasn't heard of the registry sees no change at all.
+- **A registry that is offline, unreachable, or simply never installed must
+  not cost the slice** — the same rule `_write_log` follows for the slicer's
+  own log. Every failure (a refused connection, a timeout, anything) is
+  caught and turned into one sentence appended to `slice_model`'s report,
+  never raised.
+- **The geometry hash is `Shape.hashCode()` per object**, taken from the live
+  document objects `_run_slice_model` already resolved — not from anything in
+  `oriented_export`'s report, since the scratch mesh that function builds has
+  been rotated and translated and shares no identity with the shape it came
+  from. Same `(name, hashCode())` cache-key idiom `diagnostics._shape_metrics`
+  and `model_export.export_brep` already use.
+- **Only fires on a live-document export**, never on `slice_model`'s
+  `path=` form (slicing a file that already exists): there is no FreeCAD
+  object behind that file to hash, and no document `Label` to report a
+  project name from.
+- **The project name is the document's `Label`.** Both CAD sources therefore
+  key parts by `(project name, object name)` — heli-toy always reports as
+  `"heli-toy"`, a FreeCADClaude session reports as whatever the open document
+  is called.
+
 **Face markup** (`model_server.py` + `freecad_tools/{model_export,tools_model}.py` +
 `model_ui/`, source in `model_web/`): `view_model_3d` exports the REAL native
 BREP of the named objects — no converted mesh anywhere in the path — starts the
@@ -614,6 +649,7 @@ machine with Bambu Studio set up, none needs setting:
 | `SlicerArrange` / `SlicerOrient` | bool | Defaults for those two arguments (both true). |
 | `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
 | `BridgeAutoStart` | bool | Start the bridge (and publish `bridge.json`) on workbench activation, for an external MCP client. Default **false**. |
+| `PartsRegistryUrl` | string | Base URL of the parts-registry service (a separate, standalone project — see "Parts registry" below). Empty (the default) means reporting is off entirely. |
 
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.

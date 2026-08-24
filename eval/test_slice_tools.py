@@ -50,6 +50,7 @@ import stat
 import sys
 import tempfile
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -1014,9 +1015,12 @@ def _check_preferences():
     # would have to look up themselves.
     check("every value slicer_runner and gcode_server are handed is resolved here",
           set(prefs) == {"binary", "conf", "profile_dirs", "presets", "nozzle",
-                         "arrange", "orient", "gcode_ui"}, sorted(prefs))
+                         "arrange", "orient", "gcode_ui", "registry_url"},
+          sorted(prefs))
     check("the viewer directory is a preference too, empty meaning the built one",
           prefs["gcode_ui"] == "", prefs["gcode_ui"])
+    check("the parts registry is off by default -- None, not an empty string",
+          prefs["registry_url"] is None, prefs["registry_url"])
     check("orient and arrange default on",
           prefs["orient"] is True and prefs["arrange"] is True, prefs)
     check("the nozzle is unset rather than 0.4, so slicer.json can still choose",
@@ -1111,6 +1115,84 @@ def _check_view_gcode_choice(temp_root):
           and tools_slice._exports_order == [], tools_slice._exports)
 
 
+def _check_registry_report(doc):
+    print("  -- reporting an export to the parts registry")
+    bracket = doc.getObject("Bracket")
+    cylinder = doc.getObject("Cylinder")
+    objs = [bracket, cylinder]
+    report = {
+        "path": "/tmp/model.3mf",
+        "exported": [
+            {"name": "Bracket", "label": "Bracket", "direction": "+Z up",
+             "rotated": False, "size_mm": [20, 30, 10]},
+            {"name": "Cylinder", "label": "Cylinder", "direction": "+Z up",
+             "rotated": False, "size_mm": [16, 16, 25]},
+        ],
+    }
+
+    check("no registry configured means nothing is reported",
+          tools_slice._report_to_registry(None, "Proj", objs, report) is None)
+    check("nothing exported means nothing is reported",
+          tools_slice._report_to_registry("http://x", "Proj", objs,
+                                          {"exported": []}) is None)
+
+    calls = []
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def _fake_urlopen(req, timeout=None):
+        calls.append(req)
+        return _FakeResponse()
+
+    real_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = _fake_urlopen
+    try:
+        note = tools_slice._report_to_registry(
+            "http://127.0.0.1:9999/", "Proj", objs, report)
+    finally:
+        urllib.request.urlopen = real_urlopen
+
+    check("a successful report says how many parts, and to where",
+          note == "Reported 2 part(s) to the parts registry at "
+                  "http://127.0.0.1:9999/.", note)
+    check("exactly one request was made", len(calls) == 1, len(calls))
+    sent = json.loads(calls[0].data.decode("utf-8"))
+    check("a trailing slash on the preference is not doubled into the route",
+          calls[0].full_url == "http://127.0.0.1:9999/api/parts/report",
+          calls[0].full_url)
+    check("the project name travels as given", sent["project"] == "Proj", sent)
+    check("both objects are reported, each with a real geometry hash",
+          {e["object_name"] for e in sent["exports"]} == {"Bracket", "Cylinder"}
+          and all(e["geometry_hash"] for e in sent["exports"]), sent)
+    check("the geometry hash is the live object's own Shape.hashCode()",
+          {e["object_name"]: e["geometry_hash"]
+           for e in sent["exports"]}["Bracket"] == str(bracket.Shape.hashCode()),
+          sent)
+    check("the export path is carried through",
+          all(e["export_path"] == "/tmp/model.3mf" for e in sent["exports"]), sent)
+
+    def _raising_urlopen(req, timeout=None):
+        raise OSError("connection refused")
+
+    urllib.request.urlopen = _raising_urlopen
+    try:
+        note = tools_slice._report_to_registry(
+            "http://127.0.0.1:9999", "Proj", objs, report)
+    finally:
+        urllib.request.urlopen = real_urlopen
+    check("an unreachable registry is reported as a sentence, not raised",
+          note is not None and "not tracked" in note and "127.0.0.1:9999" in note,
+          note)
+
+
 # -- the run ----------------------------------------------------------------
 
 
@@ -1168,6 +1250,7 @@ def main():
         _check_wait_and_precheck()
         _check_view_gcode_choice(temp_root)
         _check_preferences()
+        _check_registry_report(doc)
     finally:
         session.artifacts_dir = real_artifacts
         tools_slice.artifacts_dir = real_artifacts

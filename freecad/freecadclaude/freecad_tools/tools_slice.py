@@ -104,6 +104,12 @@ _PREF_NOZZLE = "SlicerNozzle"
 #: a Vite build instead of the committed gcode_ui/; empty means the committed one.
 _PREF_GCODE_UI = "GcodeUiDir"
 
+#: Base URL of the parts-registry service (a separate, standalone project --
+#: see docs/print-pipeline, or just ask). Empty (the default) means reporting
+#: is off entirely: nothing here is contacted, nothing changes for a user who
+#: has not set this up.
+_PREF_REGISTRY_URL = "PartsRegistryUrl"
+
 #: The preset kinds and the preference each falls back to. One spelling, because
 #: a refusal names these to the user and a second copy of the names is how that
 #: message goes stale without anything failing.
@@ -171,6 +177,7 @@ def _preferences():
         "arrange": bool(params.GetBool(_PREF_ARRANGE, True)),
         "orient": bool(params.GetBool(_PREF_ORIENT, True)),
         "gcode_ui": os.path.expanduser(text(_PREF_GCODE_UI)),
+        "registry_url": text(_PREF_REGISTRY_URL) or None,
     }
 
 
@@ -291,6 +298,68 @@ def reset_session():
     """
     _exports.clear()
     del _exports_order[:]
+
+
+def _report_to_registry(registry_url, project_name, objs, report):
+    """Best-effort POST of one export to the parts registry. Returns a short
+    status line to fold into slice_model's report, or None if there is
+    nothing to say (reporting is off, or nothing was exported).
+
+    The registry is a separate, standalone service that both this addon and
+    other CAD workflows report exported parts into, so it can track which
+    parts changed since they were last printed and keep per-part print
+    settings across re-exports -- see the PartsRegistryUrl preference. It
+    being offline, unconfigured, or simply not installed must never break a
+    slice, so every failure here is swallowed into the returned sentence
+    rather than raised -- the same "must not cost the outcome" rule
+    ``_write_log`` follows for the slicer's own log.
+
+    The geometry hash is ``Shape.hashCode()`` per object, the same
+    ``(name, hashCode())`` cache-key idiom ``diagnostics._shape_metrics`` and
+    ``model_export.export_brep`` already use -- taken from `objs` (the live
+    document objects) rather than from anything in `report`, since the
+    scratch mesh ``oriented_export`` builds has been rotated and translated
+    and shares no identity with the shape it was meshed from.
+    """
+    if not registry_url or not report or not report.get("exported"):
+        return None
+
+    hashes = {}
+    for obj in objs:
+        shape = getattr(obj, "Shape", None)
+        if shape is not None and not shape.isNull():
+            hashes[obj.Name] = shape.hashCode()
+
+    exports = []
+    for entry in report["exported"]:
+        name = entry["name"]
+        if name not in hashes:
+            continue
+        exports.append({
+            "object_name": name,
+            "label": entry.get("label"),
+            "geometry_hash": str(hashes[name]),
+            "export_path": report.get("path"),
+        })
+    if not exports:
+        return None
+
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = registry_url.rstrip("/") + "/api/parts/report"
+    body = json.dumps({"project": project_name, "exports": exports}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+    except Exception as exc:  # noqa: BLE001 - a registry outage must not break a slice
+        return (f"Could not reach the parts registry at {registry_url} ({exc}) "
+                "-- this export was not tracked there.")
+    return f"Reported {len(exports)} part(s) to the parts registry at {registry_url}."
 
 
 def _job_name(label):
@@ -615,6 +684,11 @@ def _run_slice_model(args):
     _remember_export(job_id, {"boxes": boxes, "report": report,
                               "orient": orient, "model_path": model_path})
 
+    registry_note = None
+    if not given:
+        registry_note = _report_to_registry(prefs["registry_url"], doc.Label,
+                                            objs, report)
+
     record = slicer_runner.job_status(job_id) or {}
     lines = [
         f"Slicing started as job '{job_id}'. This returned straight away -- the "
@@ -644,6 +718,8 @@ def _run_slice_model(args):
         "the slicer may still nudge a part that would sit off the bed."
     )
     lines.append("Command line used:\n  " + _argv_text(record.get("argv") or []))
+    if registry_note:
+        lines.append(registry_note)
     lines.append(
         "Call read_slice_result for the outcome; it waits up to 120 s for the "
         "slice by default without blocking FreeCAD. Do NOT call slice_model "
