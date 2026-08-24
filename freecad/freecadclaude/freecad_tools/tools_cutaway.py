@@ -266,7 +266,7 @@ def _run_cutaway(args):
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."
     text += _camera_angle_note(_measured_angles(measured, plan))
-    text += _shown_extents_note(doc, keep_set)
+    text += _shown_extents_note(doc, keep_set, extents if extents and not crop_warning else None)
     text += (
         " The cut is hollow -- you're seeing the interior surfaces the clip "
         "exposed, not a filled cross-section."

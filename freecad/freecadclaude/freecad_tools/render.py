@@ -444,7 +444,7 @@ def _visible_extent(cam_height, aspect):
     return cam_height, cam_height / aspect
 
 
-def _frame_camera_on_box(view, box, aspect, margin=1.06):
+def _frame_camera_on_box(view, box, aspect, margin=1.06, depth_box=None):
     """Aim `view`'s ORTHOGRAPHIC camera at world BoundBox `box` and scale it so
     the box fills a viewport of `aspect` (= render width/height), by writing the
     camera fields directly.
@@ -457,6 +457,22 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
     on the camera node is viewport-independent, so it frames the same at any
     (or no) realized widget size. Returns True on success, False if the camera
     isn't orthographic or the box is degenerate (caller keeps the fitAll frame).
+
+    `depth_box`, when given, widens the near/far clip planes (never narrows
+    them) to also cover ITS depth extent along the view axis, while `box`
+    alone still decides the on-screen framing (height/position -- the zoom).
+    This matters because `box` is frequently a caller-requested x_min..z_max
+    CROP, which is a 2D "zoom to this on-screen region" ask, not a request to
+    slice the solid open along the view direction -- but near/far were being
+    derived from that same cropped box, so on an oblique camera (where the
+    view axis is a mix of world axes) any actual geometry sticking out of the
+    crop box along that mixed direction got clipped by the near/far planes:
+    a flat cut face appearing mid-model, with no cutaway ever requested, that
+    reads as the picture having its DEPTH trimmed rather than just its frame.
+    Pass the crop's parent objects' full (uncropped) extent here whenever
+    `box` is a crop of them; omit (or pass `box` again) when there is nothing
+    to widen against, e.g. the no-crop fitAll case where `box` already IS the
+    full extent.
     """
     import FreeCAD
 
@@ -475,17 +491,34 @@ def _frame_camera_on_box(view, box, aspect, margin=1.06):
             height = 2.0 * max(hv * aspect, hu) * margin
         if height <= 1e-9:
             return False
+        # near/far as an offset range from `center` along `fwd`; -hd/+hd is
+        # `box`'s own range, widened (never narrowed) to also cover
+        # `depth_box`'s actual corners projected relative to this SAME center
+        # -- not depth_box's own centroid, which would misplace an
+        # asymmetric box relative to the eye this framing ends up using.
+        # Computed BEFORE standoff: if depth_box reaches further than `box`,
+        # the eye has to stand back further too, or a near plane pinned to
+        # the old (smaller) standoff can end up behind part of depth_box --
+        # clipping it from the OTHER side instead of fixing anything.
+        near_off, far_off = -hd, hd
+        if depth_box is not None:
+            for cx in (depth_box.XMin, depth_box.XMax):
+                for cy in (depth_box.YMin, depth_box.YMax):
+                    for cz in (depth_box.ZMin, depth_box.ZMax):
+                        d = (FreeCAD.Vector(cx, cy, cz) - center).dot(fwd)
+                        near_off, far_off = min(near_off, d), max(far_off, d)
         # Ortho scale is set by `height`, not distance, so the standoff only has
-        # to keep the box comfortably between the near/far planes.
-        standoff = 2.0 * hd + height + 1.0
+        # to keep everything comfortably between the near/far planes.
+        hd_eff = max(hd, abs(near_off), abs(far_off))
+        standoff = 2.0 * hd_eff + height + 1.0
         eye = center - fwd * standoff
         cam.position.setValue(eye.x, eye.y, eye.z)
         cam.focalDistance.setValue(standoff)
         cam.aspectRatio.setValue(aspect)
         cam.height.setValue(height)
         pad = height * 0.1 + 1.0
-        cam.nearDistance.setValue(max(1e-4, standoff - hd - pad))
-        cam.farDistance.setValue(standoff + hd + pad)
+        cam.nearDistance.setValue(max(1e-4, standoff + near_off - pad))
+        cam.farDistance.setValue(standoff + far_off + pad)
         return True
     except Exception:  # noqa: BLE001 - any coin/API hiccup -> keep the fitAll frame
         return False
@@ -526,8 +559,12 @@ def _apply_extent_crop(view, doc, extents, aspect, keep_names=None):
             "showing the full extent instead."
         )
     # Via _framed_box, so the box framed here is by construction the same one
-    # _fit_render_size then measures to pick the image shape.
-    if not _frame_camera_on_box(view, _framed_box(doc, keep_names, extents), aspect):
+    # _fit_render_size then measures to pick the image shape. depth_box is the
+    # shown objects' own UNCROPPED extent, so the crop only narrows what's
+    # framed on screen -- never what near/far let through in depth.
+    depth_box = scene_bbox if scene_bbox.XMin <= scene_bbox.XMax else None
+    if not _frame_camera_on_box(view, _framed_box(doc, keep_names, extents), aspect,
+                                 depth_box=depth_box):
         view.fitAll()
         return (
             "Warning: could not frame the requested crop on this build -- "
@@ -962,8 +999,14 @@ def _fit_render_size(view, doc, setup):
             w = h * aspect
         w, h = max(1, int(round(w))), max(1, int(round(h)))
         # fitAll (or the crop) framed for the OLD aspect, so a size change has to
-        # re-frame or the object sits letterboxed in the new shape.
-        if not _frame_camera_on_box(view, box, float(w) / float(h)):
+        # re-frame or the object sits letterboxed in the new shape. Same
+        # depth_box reasoning as _apply_extent_crop: a crop must not narrow
+        # what near/far let through, only what's framed on screen.
+        depth_box = None
+        if setup["extents"]:
+            full = _document_bbox(doc, names=setup["keep_set"])
+            depth_box = full if full.XMin <= full.XMax else None
+        if not _frame_camera_on_box(view, box, float(w) / float(h), depth_box=depth_box):
             return width, height
         return w, h
     except Exception:  # noqa: BLE001 - any coin/API hiccup -> the asked-for size
@@ -1127,12 +1170,23 @@ def _camera_angle_note(angles):
     return f" Camera angle: azimuth {azimuth:.0f} deg, elevation {elevation:.0f} deg."
 
 
-def _shown_extents_note(doc, keep_set):
+def _shown_extents_note(doc, keep_set, extents=None):
     """The ' Shown geometry spans ...' sentence of a capture result, or "".
 
     Lets Claude read the shown geometry's position and size in world coords --
     and, with the camera angle, work out which way X/Y/Z run in the image --
     without a follow-up get_objects call.
+
+    Pass `extents` (from _extent_args) when the caller's x_min..z_max crop was
+    actually honoured on the saved image, so this reports the box the camera
+    was framed on rather than the shown objects' full extent -- reporting the
+    full extent regardless of an applied crop is exactly backwards: it tells
+    Claude a tightly-cropped close-up spans the whole object. Omit it (the
+    default) whenever no crop was requested, or a requested one was refused/
+    fell back to the full frame -- both of those really did end up showing the
+    full extent.
     """
-    framed = _extent_report(_document_bbox(doc, names=keep_set))
+    base = _document_bbox(doc, names=keep_set)
+    box = _crop_bbox(base, extents) if extents else base
+    framed = _extent_report(box)
     return f" Shown geometry spans {framed} (world coords)." if framed else ""

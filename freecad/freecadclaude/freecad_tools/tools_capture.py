@@ -80,6 +80,7 @@ def _run_capture_view(args):
 
     warnings = []
     measured = None
+    crop_applied = bool(extents)
     with _offscreen_shot(doc, keep_set, width, height, style) as view:
         if view is None:
             return "Could not create an offscreen view to capture."
@@ -94,6 +95,7 @@ def _run_capture_view(args):
             warning = _apply_extent_crop(view, doc, extents, setup["aspect"], keep_set)
             if warning:
                 warnings.append(warning)
+                crop_applied = False
 
         # Last, so it reshapes whatever frame we ended up with (fitAll or crop).
         width, height = _fit_render_size(view, doc, setup)
@@ -106,6 +108,7 @@ def _run_capture_view(args):
             if extents and not warnings:
                 view.fitAll()
                 _save_view_png(view, png_path, width, height)
+                crop_applied = False
                 if _looks_blank(png_path):
                     warnings.append(
                         "Warning: the view is empty -- no visible geometry to show "
@@ -152,7 +155,7 @@ def _run_capture_view(args):
             "elevation (azimuth + swings right / - left; elevation + lifts the "
             "camera for a more top-down look / - drops it to look upward)."
         )
-    text += _shown_extents_note(doc, keep_set)
+    text += _shown_extents_note(doc, keep_set, extents if crop_applied else None)
     if warnings:
         text += "\n\n" + "\n".join(warnings)
     return text, png_path
