@@ -453,35 +453,40 @@ Design doc: `docs/slice-preview-design.md`.
   pair's size before quoting a position.
 
 **Parts registry** (`tools_slice._report_to_registry`, called from
-`_run_slice_model`): a best-effort report of one export to a separate,
-standalone project (`~/Repos/print-pipeline`, not part of this addon) that
-tracks 3D-printable parts across repeated exports — a geometry hash per part
-so a dashboard can show what changed since it was last printed, and small
-per-part print-setting overrides (supports/orientation/brim/preset choices)
-that survive a re-export, since they live on the registry's own row rather
-than on any one 3MF. `heli-toy`'s `cad/plate.py` reports into the same
-service independently, over the same HTTP route — this addon and that CAD
-workflow don't know about each other, only about the registry.
+`_run_slice_model`): a best-effort manifest write, reporting one export to a
+separate, standalone project (`~/Repos/print-pipeline`, not part of this
+addon) that tracks 3D-printable parts across repeated exports — a geometry
+hash per part so a dashboard can show what changed since it was last
+printed, and small per-part print-setting overrides (supports/orientation/
+brim/preset choices) that survive a re-export, since they live on the
+registry's own row rather than on any one 3MF. `heli-toy`'s `cad/plate.py`
+reports into the same service independently, the same way — this addon and
+that CAD workflow don't know about each other, only about the registry.
 
-- **Off by default, and silently off**: `PartsRegistryUrl` empty (the
+- **No network call at all.** This addon does not talk to the registry over
+  HTTP — it writes a small JSON manifest (object names + labels + the 3MF
+  path) into a directory, a pure local file write. The registry itself reads
+  the 3MF and computes each object's geometry hash from the exported mesh's
+  own content, whenever it next runs — there is no timing coupling in either
+  direction: export today, and the registry can be started next week and
+  still pick it up. This is deliberate, not incidental: `Shape.hashCode()` is
+  an identity hash for FreeCAD's in-memory shape, not guaranteed stable
+  across a FreeCAD restart, so it is never sent anywhere — a content hash
+  computed once, centrally, by the registry itself is what makes "did this
+  part actually change" a question with a stable answer.
+- **Off by default, and silently off**: `PartsRegistryDir` empty (the
   default) means `_report_to_registry` returns `None` before doing anything —
-  no import, no network attempt, nothing added to `slice_model`'s report. A
-  user who hasn't heard of the registry sees no change at all.
-- **A registry that is offline, unreachable, or simply never installed must
-  not cost the slice** — the same rule `_write_log` follows for the slicer's
-  own log. Every failure (a refused connection, a timeout, anything) is
-  caught and turned into one sentence appended to `slice_model`'s report,
-  never raised.
-- **The geometry hash is `Shape.hashCode()` per object**, taken from the live
-  document objects `_run_slice_model` already resolved — not from anything in
-  `oriented_export`'s report, since the scratch mesh that function builds has
-  been rotated and translated and shares no identity with the shape it came
-  from. Same `(name, hashCode())` cache-key idiom `diagnostics._shape_metrics`
-  and `model_export.export_brep` already use.
+  no manifest written, nothing added to `slice_model`'s report. A user who
+  hasn't heard of the registry sees no change at all.
+- **A registry directory that can't be written to (full disk, bad path,
+  permissions) must not cost the slice** — the same rule `_write_log` follows
+  for the slicer's own log. Every failure is caught and turned into one
+  sentence appended to `slice_model`'s report, never raised. Written under a
+  `.tmp` suffix first and atomically renamed to `.json` — the registry's scan
+  must never be able to glob a manifest mid-write.
 - **Only fires on a live-document export**, never on `slice_model`'s
   `path=` form (slicing a file that already exists): there is no FreeCAD
-  object behind that file to hash, and no document `Label` to report a
-  project name from.
+  document `Label` to report a project name from in that case.
 - **The project name is the document's `Label`.** Both CAD sources therefore
   key parts by `(project name, object name)` — heli-toy always reports as
   `"heli-toy"`, a FreeCADClaude session reports as whatever the open document
@@ -649,7 +654,7 @@ machine with Bambu Studio set up, none needs setting:
 | `SlicerArrange` / `SlicerOrient` | bool | Defaults for those two arguments (both true). |
 | `GcodeUiDir` | string | Override `gcode_ui/` — the dev hook for pointing at a Vite build. |
 | `BridgeAutoStart` | bool | Start the bridge (and publish `bridge.json`) on workbench activation, for an external MCP client. Default **false**. |
-| `PartsRegistryUrl` | string | Base URL of the parts-registry service (a separate, standalone project — see "Parts registry" below). Empty (the default) means reporting is off entirely. |
+| `PartsRegistryDir` | string | Where to drop a manifest for the parts-registry service (a separate, standalone project — see "Parts registry" below) to pick up. A path, not a URL — the registry ingests from disk. Empty (the default) means reporting is off entirely. |
 
 **Draw style** (`style` on both `capture_view` and `cutaway`, schema shared via
 `render._STYLE_SCHEMA_PROPS`): `shaded` (default), `xray`, `wireframe`.
