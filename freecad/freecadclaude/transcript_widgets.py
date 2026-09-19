@@ -48,19 +48,24 @@ def _blend(a, b, t):
     )
 
 
-def _document_style():
-    """A stylesheet for rendered Markdown, derived from the running palette.
+def _document_style(widget):
+    """A stylesheet for rendered Markdown, derived from `widget`'s own palette.
 
-    QTextBrowser paints its own Base background and Qt's Markdown renderer has
-    its own idea of what a code block looks like, so under a dark FreeCAD the
-    transcript came out as a white slab in a dark window. Everything below is
-    computed from QApplication.palette(), so the panel follows the theme rather
-    than carrying colours of its own -- including a theme switched while it is
-    open.
+    The widget's, NOT QApplication's. FreeCAD's themes are Qt STYLE SHEETS
+    (Preferences -> Theme writes StyleSheet=FreeCAD.qss), and a stylesheet does
+    not change the application palette -- so under FreeCAD Dark
+    QApplication.palette() is still the light system palette. Deriving from it
+    produced a light transcript carrying the qss's light text: white on white,
+    which is how this was first "fixed".
+
+    Qt folds a stylesheet's color/background-color into the widget's OWN
+    palette when it polishes it, so the widget is the one thing that knows what
+    it actually looks like. It only knows after polish, which is why this is
+    called from showEvent rather than __init__.
     """
-    pal = QtWidgets.QApplication.palette()
-    text = pal.windowText().color()
-    bg = pal.window().color()
+    pal = widget.palette()
+    text = pal.color(QtGui.QPalette.Text)
+    bg = pal.color(QtGui.QPalette.Base)
     # A code block wants to read as slightly inset from the surface it sits on,
     # in whichever direction that surface is dark or light.
     code_bg = _blend(bg, text, 0.10)
@@ -88,9 +93,13 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setStyleSheet("QTextBrowser { background: transparent; }")
+        # Transparent, and no border: many of these stack inside one scroll
+        # area, and the theme's QTextBrowser border would draw a box around
+        # every single message.
+        self.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; }")
         self.viewport().setAutoFillBackground(False)
-        self.document().setDefaultStyleSheet(_document_style())
+        self._styled = False
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setOpenExternalLinks(True)
@@ -98,16 +107,28 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
         self._min_height = self.fontMetrics().height() + 8
         self.document().documentLayout().documentSizeChanged.connect(self._sync_height)
 
+    def _restyle(self):
+        """(Re)derive the document stylesheet from this widget's palette."""
+        self.document().setDefaultStyleSheet(_document_style(self))
+        if self._styled:
+            # setDefaultStyleSheet only affects content set AFTER it, so
+            # already-rendered text has to be put through again.
+            self.document().setHtml(self.document().toHtml())
+        self._styled = True
+
+    def showEvent(self, event):
+        """First point at which the theme's stylesheet has been folded into
+        this widget's palette -- see _document_style."""
+        super().showEvent(event)
+        if not self._styled:
+            self._restyle()
+
     def changeEvent(self, event):
-        """Follow a theme switch. FreeCAD can change palette under a live
-        window, and a stylesheet derived once at construction would leave the
-        panel styled for the theme that is no longer on."""
+        """Follow a theme switch under a live window."""
         super().changeEvent(event)
-        if event.type() == QtCore.QEvent.PaletteChange:
-            self.document().setDefaultStyleSheet(_document_style())
-            # setDefaultStyleSheet only applies to content set afterwards.
-            html = self.document().toHtml()
-            self.document().setHtml(html)
+        if event.type() in (QtCore.QEvent.PaletteChange,
+                            QtCore.QEvent.StyleChange):
+            self._restyle()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -335,10 +356,16 @@ class TranscriptView(QtWidgets.QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        # Transparent all the way down, so the dock's own background is what
-        # you see. Named on the class so it cannot leak into child widgets that
-        # want their own (buttons, the input box).
-        self.setStyleSheet("QScrollArea { background: transparent; }")
+        # Transparent all the way down, so the dock's own themed background is
+        # what you see and this panel contributes no colour of its own.
+        #
+        # Both selectors are needed. A QScrollArea paints through a viewport
+        # and then the widget set on it, and neither is matched by a bare
+        # QScrollArea selector -- which is why styling the class alone left the
+        # body painting the default light background under a dark theme.
+        self.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }")
         self.viewport().setAutoFillBackground(False)
 
         body = QtWidgets.QWidget(self)

@@ -5,11 +5,18 @@
 
 QTextBrowser paints its own Base background and Qt's Markdown renderer has its
 own idea of a code block, so the panel came out as a white slab inside a dark
-FreeCAD. The fix is to name no colours of our own: the browsers are painted
-transparent and everything else is derived from QApplication.palette().
+FreeCAD.
 
-That is only true for as long as nobody puts a literal back, which is what
-these tests are for. Runs headless on the offscreen platform plugin.
+The first fix derived colours from QApplication.palette() and made it worse:
+FreeCAD's themes are Qt STYLE SHEETS, and a stylesheet does not change the
+application palette, so under FreeCAD Dark that palette is still the light
+system one. The result was a light transcript carrying the theme's light text
+-- white on white. Colours come from the WIDGET's palette now, which Qt has
+folded the stylesheet into by the time it is polished.
+
+These tests hold both ends of that down: the style must move with the palette
+it is given, and it must not name a colour of its own. Headless on the
+offscreen platform plugin.
 """
 
 import os
@@ -35,18 +42,37 @@ DARK = ("#1e1e1e", "#e0e0e0")
 LIGHT = ("#ffffff", "#000000")
 
 
-def _style(window, window_text):
-    pal = QtGui.QPalette()
-    pal.setColor(QtGui.QPalette.Window, QtGui.QColor(window))
-    pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor(window_text))
-    _app.setPalette(pal)
-    return tw._document_style()
+def _style(base, text):
+    """A style derived from a WIDGET carrying these colours.
+
+    Deliberately set on the widget, not the application: a widget whose palette
+    differs from the app's is exactly the situation a stylesheet theme creates,
+    and the situation that broke this.
+    """
+    widget = QtWidgets.QWidget()
+    pal = widget.palette()
+    pal.setColor(QtGui.QPalette.Base, QtGui.QColor(base))
+    pal.setColor(QtGui.QPalette.Text, QtGui.QColor(text))
+    widget.setPalette(pal)
+    return tw._document_style(widget)
 
 
 class DocumentStyle(unittest.TestCase):
     def test_style_changes_with_the_palette(self):
         self.assertNotEqual(_style(*DARK), _style(*LIGHT),
                             "a style that ignores the palette is a hardcoded theme")
+
+    def test_the_widgets_palette_is_what_counts_not_the_applications(self):
+        """The bug this file exists for. A stylesheet theme leaves the
+        application palette light while the widget's is dark; reading the
+        application's gave a light transcript under a dark FreeCAD."""
+        app_pal = QtGui.QPalette()
+        app_pal.setColor(QtGui.QPalette.Base, QtGui.QColor(LIGHT[0]))
+        app_pal.setColor(QtGui.QPalette.Text, QtGui.QColor(LIGHT[1]))
+        _app.setPalette(app_pal)
+        self.assertEqual(_style(*DARK), _style(*DARK))
+        self.assertNotEqual(_style(*DARK), _style(*LIGHT),
+                            "the widget's palette must win over the app's")
 
     def test_code_block_is_inset_in_whichever_direction_the_theme_runs(self):
         """Lighter than a dark surface, darker than a light one -- a fixed
