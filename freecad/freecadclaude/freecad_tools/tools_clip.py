@@ -19,6 +19,7 @@ segfault lands somewhere with no mention of a clip plane in it.
 
 import FreeCAD
 
+from .render import _apply_camera_orientation, _orbit_rotation
 from .tools_cutaway import _insert_clip_plane, _resolve_clip_plane
 
 #: {document name: (clip node, the group it was inserted into)}. Holds the
@@ -40,8 +41,11 @@ _CLIP_VIEW_SCHEMA = {
         "the normal points toward. Pass 'off': true to remove it. The cut is a "
         "view setting, not geometry: nothing is modelled, the document is not "
         "modified, and the surface is HOLLOW -- you see the inside faces the "
-        "cut exposed, not a filled section. Tell the user it is on and how to "
-        "get rid of it, because it persists until someone says so."
+        "cut exposed, not a filled section. The camera is swung round to face "
+        "the cut unless 'look' is false -- a clip applied while looking at the "
+        "outer surface of the half that stays looks like nothing happened. "
+        "Tell the user it is on and how to get rid of it, because it persists "
+        "until someone says so."
     ),
     "inputSchema": {
         "type": "object",
@@ -52,6 +56,10 @@ _CLIP_VIEW_SCHEMA = {
             "point": {"type": "array", "items": {"type": "number"}},
             "normal": {"type": "array", "items": {"type": "number"}},
             "off": {"type": "boolean", "description": "Remove the clip plane"},
+            "look": {
+                "type": "boolean",
+                "description": "Face the camera at the cut (default true)",
+            },
         },
     },
 }
@@ -83,6 +91,44 @@ def _remove(doc_name):
     return True
 
 
+def _face_the_cut(view, normal):
+    """Point the camera INTO the half that stays, so the cut is what you see.
+
+    SoClipPlane keeps the side its normal points toward. Sitting on that side
+    and looking further into it shows the intact outer surface of the kept
+    half: the model looks exactly as it did before, and the clip reads as if it
+    did nothing. That is the usual first experience of this tool, and it is
+    what happened the first time it was used.
+
+    So the camera wants its view direction running WITH the normal -- on the
+    removed side, looking into the opened cavity. Left alone when it already
+    is, and reported either way, because a view that moves without being asked
+    deserves a sentence.
+    """
+    try:
+        d = view.getViewDirection()
+        dot = d.x * normal[0] + d.y * normal[1] + d.z * normal[2]
+    except Exception:  # noqa: BLE001 - cannot tell; leave the camera alone
+        return False
+    if dot > 0.35:
+        return False  # already looking into the cut
+
+    import math
+
+    # Azimuth/elevation in the convention _orbit_rotation takes: azimuth 0
+    # looks along +Y (front), elevation +90 looks straight down. The eye sits
+    # opposite the direction we want to look in.
+    nx, ny, nz = normal
+    length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+    nx, ny, nz = nx / length, ny / length, nz / length
+    azimuth = math.degrees(math.atan2(-nx, ny))
+    elevation = math.degrees(math.asin(max(-1.0, min(1.0, -nz))))
+    try:
+        return bool(_apply_camera_orientation(view, _orbit_rotation(azimuth, elevation)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_clip_view(args):
     doc = FreeCAD.ActiveDocument
     if doc is None:
@@ -102,7 +148,7 @@ def _run_clip_view(args):
     except Exception as exc:  # noqa: BLE001
         return f"Could not load the Coin3D scene-graph library: {exc!r}"
 
-    plane, desc, _normal, err = _resolve_clip_plane(args, doc)
+    plane, desc, normal, err = _resolve_clip_plane(args, doc)
     if err:
         return err
 
@@ -121,9 +167,14 @@ def _run_clip_view(args):
         return f"Could not apply the clip plane to the view: {exc!r}"
 
     _ACTIVE[doc.Name] = (clip, parent)
+
+    moved = _face_the_cut(view, normal) if args.get("look", True) else False
+
     return (
-        f"Cut open in the user's view at {desc}. It stays until removed "
-        "(clip_view with 'off': true, or View -> Clipping plane). The cut is "
-        "hollow -- those are the interior surfaces it exposed, not a filled "
-        "section -- and nothing was modelled, so the document is unchanged."
+        f"Cut open in the user's view at {desc}."
+        + (" Swung the camera round to face the cut." if moved else "")
+        + " It stays until removed (clip_view with 'off': true, or "
+        "View -> Clipping plane). The cut is hollow -- those are the interior "
+        "surfaces it exposed, not a filled section -- and nothing was "
+        "modelled, so the document is unchanged."
     )

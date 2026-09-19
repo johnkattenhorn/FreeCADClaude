@@ -109,5 +109,67 @@ class OffWithNoDocument(unittest.TestCase):
             importlib.reload(tools_clip)
 
 
+class _Dir:
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+
+
+class _CamView:
+    def __init__(self, direction):
+        self._dir = direction
+        self.oriented = []
+
+    def getViewDirection(self):
+        return self._dir
+
+
+class FaceTheCut(unittest.TestCase):
+    """SoClipPlane keeps the side its normal points toward. A camera sitting on
+    that side and looking further into it sees the kept half's intact outer
+    surface -- the model looks untouched and the clip reads as a no-op. That is
+    what happened the first time this tool was used.
+    """
+
+    def setUp(self):
+        self._apply = tools_clip._apply_camera_orientation
+        self._rot = tools_clip._orbit_rotation
+        self.applied = []
+        tools_clip._apply_camera_orientation = lambda v, r: self.applied.append(r) or True
+        tools_clip._orbit_rotation = lambda az, el: ("rot", round(az, 3), round(el, 3))
+
+    def tearDown(self):
+        tools_clip._apply_camera_orientation = self._apply
+        tools_clip._orbit_rotation = self._rot
+
+    def test_camera_already_looking_into_the_cut_is_left_alone(self):
+        view = _CamView(_Dir(0, 1, 0))
+        self.assertFalse(tools_clip._face_the_cut(view, (0, 1, 0)))
+        self.assertEqual(self.applied, [], "an unnecessary move is still a move")
+
+    def test_camera_on_the_wrong_side_is_swung_round(self):
+        view = _CamView(_Dir(0, -1, 0))   # looking away from the kept half
+        self.assertTrue(tools_clip._face_the_cut(view, (0, 1, 0)))
+        self.assertEqual(len(self.applied), 1)
+
+    def test_it_ends_up_looking_along_the_normal(self):
+        """+X normal: the eye goes to -X, so azimuth is -90 and level."""
+        view = _CamView(_Dir(-1, 0, 0))
+        tools_clip._face_the_cut(view, (1, 0, 0))
+        self.assertEqual(self.applied, [("rot", -90.0, 0.0)])
+
+    def test_a_z_normal_gives_a_straight_down_look(self):
+        view = _CamView(_Dir(0, 0, 1))
+        tools_clip._face_the_cut(view, (0, 0, -1))
+        _tag, _az, elevation = self.applied[0]
+        self.assertAlmostEqual(elevation, 90.0, places=3)
+
+    def test_an_unreadable_view_direction_leaves_the_camera_alone(self):
+        class _Broken:
+            def getViewDirection(self):
+                raise RuntimeError("no camera")
+
+        self.assertFalse(tools_clip._face_the_cut(_Broken(), (0, 1, 0)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

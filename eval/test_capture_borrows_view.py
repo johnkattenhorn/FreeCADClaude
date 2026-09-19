@@ -30,11 +30,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from freecad.freecadclaude.freecad_tools import render  # noqa: E402
 
 
+class _Viewer:
+    def __init__(self, mode="As is"):
+        self.mode = mode
+
+    def getOverrideMode(self):
+        return self.mode
+
+    def setOverrideMode(self, mode):
+        self.mode = mode
+
+
 class _View:
     def __init__(self, camera="CAM-ORIGINAL"):
         self.camera = camera
         self.restored = []
-        self.animation = None
+        self.animation = True
+        self.viewer = _Viewer("Wireframe")   # the user's own choice
 
     def saveImage(self, *_a, **_kw):
         pass
@@ -45,8 +57,14 @@ class _View:
     def setCamera(self, cam):
         self.restored.append(cam)
 
+    def isAnimationEnabled(self):
+        return self.animation
+
     def setAnimationEnabled(self, on):
         self.animation = on
+
+    def getViewer(self):
+        return self.viewer
 
 
 class _GuiDoc:
@@ -73,41 +91,52 @@ def _install(active, gui_doc):
 
 
 class BorrowsTheActiveView(unittest.TestCase):
-    def setUp(self):
-        self._force = render._force_draw_style
-        render._force_draw_style = lambda *a, **kw: None
-
     def tearDown(self):
-        render._force_draw_style = self._force
         sys.modules.pop("FreeCADGui", None)
 
     def test_uses_the_active_view_and_creates_nothing(self):
         view = _View()
         _install(view, _GuiDoc([view]))
-        got, camera, prev = render._offscreen_view(_Doc())
+        got, state, prev = render._offscreen_view(_Doc())
         self.assertIs(got, view)
-        self.assertEqual(camera, "CAM-ORIGINAL")
         self.assertIs(prev, view)
-        self.assertIs(view.animation, False, "animation must be off for a capture")
+        camera, animation, draw_style = state
+        self.assertEqual(camera, "CAM-ORIGINAL")
+        self.assertIs(animation, True, "the user's setting must be remembered")
+        self.assertEqual(draw_style, "Wireframe", "and so must their draw style")
+        self.assertIs(view.animation, False, "animation off for the capture")
 
     def test_falls_back_to_a_3d_view_when_the_active_tab_is_not_one(self):
         """A spreadsheet or TechDraw tab must not make a capture give up."""
         view = _View()
         _install(object(), _GuiDoc([view]))  # active tab has no saveImage
-        got, _camera, _prev = render._offscreen_view(_Doc())
+        got, _state, _prev = render._offscreen_view(_Doc())
         self.assertIs(got, view)
 
     def test_no_3d_view_at_all_bails_rather_than_creating_one(self):
         _install(object(), _GuiDoc([]))
         self.assertEqual(render._offscreen_view(_Doc()), (None, None, None))
 
-    def test_camera_is_put_back(self):
+    def test_everything_borrowed_is_put_back(self):
+        """Camera, animation and draw style. The last two used to die with a
+        throwaway view; left on the user's own they change how their navigation
+        behaves long after the capture that set them."""
         view = _View()
-        render._close_offscreen_view("CAM-ORIGINAL", view)
-        self.assertEqual(view.restored, ["CAM-ORIGINAL"],
-                         "the user's camera must come back exactly")
+        view.animation = False
+        view.viewer.mode = "Flat Lines"
+        render._close_offscreen_view(("CAM-ORIGINAL", True, "Wireframe"), view)
+        self.assertEqual(view.restored, ["CAM-ORIGINAL"])
+        self.assertIs(view.animation, True)
+        self.assertEqual(view.viewer.mode, "Wireframe")
 
-    def test_restore_without_a_camera_is_a_no_op(self):
+    def test_no_recorded_draw_style_falls_back_to_no_override(self):
+        view = _View()
+        view.viewer.mode = "Flat Lines"
+        render._close_offscreen_view(("CAM", True, None), view)
+        self.assertEqual(view.viewer.mode, "As is",
+                         "FreeCAD's own name for no override")
+
+    def test_restore_without_state_is_a_no_op(self):
         view = _View()
         render._close_offscreen_view(None, view)
         self.assertEqual(view.restored, [])

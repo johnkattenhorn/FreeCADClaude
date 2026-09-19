@@ -119,13 +119,34 @@ def _force_draw_style(view, style=_DEFAULT_STYLE):
     drawn. The single place the override is set, so the default and the
     caller-chosen style can't be applied by two different mechanisms.
 
-    setOverrideMode is per-viewer state on the throwaway Coin viewer this
-    view owns; it never touches the user's real view or any ViewObject
-    property. No-op on FreeCAD builds that predate the Python binding for
+    setOverrideMode is per-viewer state, not a document or ViewObject property.
+    It used to belong to a throwaway viewer and die with it; captures borrow the
+    user's own view now, so it outlives the call and MUST be put back. Returns
+    the previous mode for that, or None when there was nothing to read.
+
+    No-op on FreeCAD builds that predate the Python binding for
     View3DInventorViewer.setOverrideMode (FreeCAD/FreeCAD#19044, Jan 2025).
     """
+    previous = None
     try:
-        view.getViewer().setOverrideMode(_OVERRIDE_MODES.get(style, "Flat Lines"))
+        viewer = view.getViewer()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        previous = viewer.getOverrideMode()
+    except Exception:  # noqa: BLE001 - older build: nothing to restore to
+        previous = None
+    try:
+        viewer.setOverrideMode(_OVERRIDE_MODES.get(style, "Flat Lines"))
+    except Exception:  # noqa: BLE001
+        pass
+    return previous
+
+
+def _restore_draw_style(view, previous):
+    """Undo _force_draw_style. "As is" is FreeCAD's own name for no override."""
+    try:
+        view.getViewer().setOverrideMode(previous or "As is")
     except Exception:  # noqa: BLE001
         pass
 
@@ -180,26 +201,51 @@ def _offscreen_view(doc):
     # return before the animation finishes; the event loop never turns during
     # a tool call, so disable animation to make them apply immediately.
     try:
+        animation = view.isAnimationEnabled()
+    except Exception:  # noqa: BLE001
+        animation = None
+    try:
         view.setAnimationEnabled(False)
     except Exception:  # noqa: BLE001
         pass
-    _force_draw_style(view)
-    return view, camera, view
+
+    draw_style = _force_draw_style(view)
+
+    # Everything this call changes on a view that is NOT ours, so the finally
+    # in _offscreen_shot can put every bit of it back. Leaving the draw-style
+    # override and animation behind is what made the user's own navigation go
+    # strange after a capture.
+    return view, (camera, animation, draw_style), view
 
 
-def _close_offscreen_view(camera, prev_view=None):
-    """Put the borrowed view's camera back exactly as it was.
+def _close_offscreen_view(state, prev_view=None):
+    """Put the borrowed view back exactly as it was: camera, animation setting
+    and draw-style override.
 
     Nothing is closed or destroyed any more -- see _offscreen_view. The whole
     tool call is one blocked GUI-thread event, so the view never repaints
-    between the capture moving the camera and this putting it back, and the
-    user sees no flicker.
+    between the capture changing these and this putting them back, and the user
+    sees no flicker.
+
+    All three matter. The draw-style override and the animation flag are
+    per-viewer state that used to die with a throwaway view; left behind on a
+    real one they change how the user's own navigation behaves, long after the
+    capture that set them.
     """
-    if camera is not None and prev_view is not None:
+    if prev_view is None or state is None:
+        return
+    camera, animation, draw_style = state
+    if camera is not None:
         try:
             prev_view.setCamera(camera)
         except Exception:  # noqa: BLE001 - view gone; nothing to restore it to
             pass
+    if animation is not None:
+        try:
+            prev_view.setAnimationEnabled(animation)
+        except Exception:  # noqa: BLE001
+            pass
+    _restore_draw_style(prev_view, draw_style)
 
 
 def _default_shape_rgb():
@@ -327,7 +373,7 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
     """
     import FreeCADGui
 
-    view, camera, prev_view = _offscreen_view(doc)
+    view, view_state, prev_view = _offscreen_view(doc)
     if view is None:
         yield None
         return
@@ -342,7 +388,7 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
         # No resize: the view is the user's, and saveImage takes the pixel
         # size it is asked for regardless of the widget's own.
         # Per-view override: no document mutation, and it dies with the view.
-        _force_draw_style(view, style)
+        _force_draw_style(view, style)  # undone by _close_offscreen_view
         with _shot_appearance(doc, keep_names, style):
             yield view
     finally:
@@ -353,7 +399,7 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
                 gui_doc.Modified = prev_modified
             except Exception:  # noqa: BLE001
                 pass
-        _close_offscreen_view(camera, prev_view)
+        _close_offscreen_view(view_state, prev_view)
 
 
 def _camera_basis(cam):
