@@ -90,6 +90,12 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
     until the theme changed.
     """
 
+    #: On the CLASS, not set in __init__. Qt delivers changeEvent during
+    #: QTextBrowser's own constructor -- before any instance attribute exists
+    #: -- so an override that reads self._styled raises from inside
+    #: super().__init__() and takes the whole panel down with it.
+    _styled = False
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -99,7 +105,6 @@ class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
         self.setStyleSheet(
             "QTextBrowser { background: transparent; border: none; }")
         self.viewport().setAutoFillBackground(False)
-        self._styled = False
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setOpenExternalLinks(True)

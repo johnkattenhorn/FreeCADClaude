@@ -96,6 +96,30 @@ class DocumentStyle(unittest.TestCase):
                 self.assertNotIn("white", style)
 
 
+class BrowserConstruction(unittest.TestCase):
+    """Constructing one must not raise.
+
+    Qt delivers changeEvent from inside QTextBrowser's own constructor, so any
+    override reading an instance attribute set afterwards blows up during
+    super().__init__(). That took the whole panel down at startup with
+    "'_AutoHeightTextBrowser' object has no attribute '_styled'", and no
+    headless test of the styling function could have seen it -- only building
+    the widget does.
+    """
+
+    def test_constructs_and_styles_itself(self):
+        browser = tw._AutoHeightTextBrowser()
+        browser.setMarkdown("a `code` span")
+        browser.show()  # showEvent is where the style is derived
+        self.assertTrue(browser._styled, "should have styled itself once shown")
+
+    def test_a_palette_change_before_show_does_not_raise(self):
+        browser = tw._AutoHeightTextBrowser()
+        pal = browser.palette()
+        pal.setColor(QtGui.QPalette.Base, QtGui.QColor(DARK[0]))
+        browser.setPalette(pal)  # delivers PaletteChange
+
+
 class Blend(unittest.TestCase):
     def test_endpoints_and_midpoint(self):
         black, white = QtGui.QColor("#000000"), QtGui.QColor("#ffffff")
