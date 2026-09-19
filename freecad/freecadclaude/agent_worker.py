@@ -360,6 +360,20 @@ class AgentWorker(QtCore.QObject):
     def submit(self, text):
         self._queue.put(text)
 
+    @property
+    def session_id(self):
+        """Claude's own session id, once a turn has reported one."""
+        return self._session_id
+
+    def adopt_session(self, session_id):
+        """Carry on a conversation restored from disk.
+
+        Set BEFORE the next turn so it goes out as --resume. Without it a
+        restored transcript is a chat the model has no memory of, which reads
+        worse than an empty panel.
+        """
+        self._session_id = session_id or None
+
     def reset_session(self):
         """Forget the conversation so the next turn starts a fresh CLI session."""
         self._session_id = None

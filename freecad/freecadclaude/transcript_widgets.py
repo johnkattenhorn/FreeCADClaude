@@ -38,19 +38,76 @@ def _header_color(kind):
     return {"you": YOU_COLOR, "claude": CLAUDE_COLOR, "thinking": MUTED_COLOR}.get(kind)
 
 
+def _blend(a, b, t):
+    """Mix two QColors. Used to derive shades from the theme instead of naming
+    colours of our own, which is what made the panel white under a dark FreeCAD."""
+    return QtGui.QColor(
+        int(a.red() * (1 - t) + b.red() * t),
+        int(a.green() * (1 - t) + b.green() * t),
+        int(a.blue() * (1 - t) + b.blue() * t),
+    )
+
+
+def _document_style():
+    """A stylesheet for rendered Markdown, derived from the running palette.
+
+    QTextBrowser paints its own Base background and Qt's Markdown renderer has
+    its own idea of what a code block looks like, so under a dark FreeCAD the
+    transcript came out as a white slab in a dark window. Everything below is
+    computed from QApplication.palette(), so the panel follows the theme rather
+    than carrying colours of its own -- including a theme switched while it is
+    open.
+    """
+    pal = QtWidgets.QApplication.palette()
+    text = pal.windowText().color()
+    bg = pal.window().color()
+    # A code block wants to read as slightly inset from the surface it sits on,
+    # in whichever direction that surface is dark or light.
+    code_bg = _blend(bg, text, 0.10)
+    rule = _blend(bg, text, 0.25)
+    quote = _blend(bg, text, 0.55)
+    return (
+        "code, pre {{ background-color: {code}; }}"
+        "pre {{ padding: 4px; }}"
+        "blockquote {{ color: {quote}; }}"
+        "hr {{ border: 1px solid {rule}; }}"
+        "table, th, td {{ border: 1px solid {rule}; border-collapse: collapse; }}"
+        "th, td {{ padding: 2px 6px; }}"
+    ).format(code=code_bg.name(), quote=quote.name(), rule=rule.name())
+
+
 class _AutoHeightTextBrowser(QtWidgets.QTextBrowser):
     """A QTextBrowser that sizes itself to its document instead of scrolling
-    internally, so many of these can stack inside one outer QScrollArea."""
+    internally, so many of these can stack inside one outer QScrollArea.
+
+    Painted transparent so FreeCAD's own panel background shows through. That
+    is deliberately not "a dark background": picking one would only be right
+    until the theme changed.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setStyleSheet("QTextBrowser { background: transparent; }")
+        self.viewport().setAutoFillBackground(False)
+        self.document().setDefaultStyleSheet(_document_style())
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setOpenExternalLinks(True)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self._min_height = self.fontMetrics().height() + 8
         self.document().documentLayout().documentSizeChanged.connect(self._sync_height)
+
+    def changeEvent(self, event):
+        """Follow a theme switch. FreeCAD can change palette under a live
+        window, and a stylesheet derived once at construction would leave the
+        panel styled for the theme that is no longer on."""
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.PaletteChange:
+            self.document().setDefaultStyleSheet(_document_style())
+            # setDefaultStyleSheet only applies to content set afterwards.
+            html = self.document().toHtml()
+            self.document().setHtml(html)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -278,8 +335,14 @@ class TranscriptView(QtWidgets.QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # Transparent all the way down, so the dock's own background is what
+        # you see. Named on the class so it cannot leak into child widgets that
+        # want their own (buttons, the input box).
+        self.setStyleSheet("QScrollArea { background: transparent; }")
+        self.viewport().setAutoFillBackground(False)
 
         body = QtWidgets.QWidget(self)
+        body.setAutoFillBackground(False)
         self._layout = QtWidgets.QVBoxLayout(body)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(6)
@@ -345,6 +408,15 @@ class TranscriptView(QtWidgets.QScrollArea):
         self._stick_to_bottom = value >= bar.maximum() - 8
 
     # -- ChatWidget._md compatibility -----------------------------------
+
+    def entries(self):
+        """The committed transcript as (kind, text) pairs, for chat_store.
+
+        Live entries are skipped: a turn still streaming has no final text, and
+        a half-streamed answer restored after a restart would read as a
+        complete one.
+        """
+        return [(e.kind, e.raw_text) for e in self._entries if not e.is_live]
 
     def to_markdown(self):
         # NB: filter on the rendered fragment, not raw_text -- a "tool" entry's

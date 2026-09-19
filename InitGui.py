@@ -85,6 +85,37 @@ class FreeCADClaudeWorkbench(FreeCADGui.Workbench):
 FreeCADGui.addWorkbench(FreeCADClaudeWorkbench())
 
 
+# Reopen the panel if that is how it was left.
+#
+# The workbench's Activated() is what builds the docks, and it only runs when
+# the user switches to this workbench -- so with any other workbench set as the
+# startup one, the panel came back closed every time regardless of how it was
+# left. This restores it without switching workbench: Activated() does nothing
+# but call get_panel()/show_dock(), so calling the same thing here is enough.
+#
+# On a timer because there is no main window yet while InitGui.py is being
+# exec'd; 0 ms is enough, it only has to land after the event loop starts.
+def _freecadclaude_restore_panel():
+    try:
+        from freecad.freecadclaude import chat_panel, plan_panel
+
+        if not chat_panel.ChatPanel.remembered_visible():
+            return
+        chat_panel.get_panel()
+        plan_panel.get_panel()
+        plan_panel.get_panel().show_dock()
+        chat_panel.get_panel().show_dock()  # chat to the front tab
+    except Exception as exc:  # noqa: BLE001 - never let this stop FreeCAD starting
+        FreeCAD.Console.PrintWarning(
+            f"FreeCADClaude: could not restore the panel ({exc})\n"
+        )
+
+
+from PySide.QtCore import QTimer as _QTimerRestore  # noqa: E402
+
+_QTimerRestore.singleShot(0, _freecadclaude_restore_panel)
+
+
 # Unattended evaluation hook: when FREECADCLAUDE_EVAL is set, run a prompt end to
 # end after the GUI has settled, then quit. Normal startups skip this entirely.
 import os as _os

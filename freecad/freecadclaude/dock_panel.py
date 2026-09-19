@@ -64,8 +64,46 @@ class DockPanel:
         dock.setWindowTitle(self.TITLE)
         dock.setWidget(self._make_widget(dock))
         main_window.addDockWidget(self.AREA, dock)
+        dock.visibilityChanged.connect(lambda _: self._remember_visible())
         self._on_created(dock, main_window)
         self._dock = dock
+
+    # -- remembering whether the panel was open ---------------------------
+    #
+    # FreeCAD's own dock save/restore cannot help here: it restores state at
+    # startup, and these docks do not exist yet at that point -- they are built
+    # in the workbench's Activated(). So the panel came back closed every time,
+    # whatever the user left it as.
+
+    @classmethod
+    def _visible_pref(cls):
+        return cls.OBJECT_NAME + "Visible"
+
+    @classmethod
+    def remembered_visible(cls, default=False):
+        """Was this panel open when FreeCAD last closed?"""
+        import FreeCAD
+
+        from .freecad_tools import PARAM_PATH
+
+        return FreeCAD.ParamGet(PARAM_PATH).GetBool(cls._visible_pref(), default)
+
+    def _remember_visible(self):
+        """Record the dock's state.
+
+        isHidden(), not isVisible(). A dock tabbed behind its neighbour, or one
+        whose main window is minimised, is not visible but has not been closed
+        -- and visibilityChanged fires for both. Keyed on isVisible() the panel
+        would record itself shut every time the user looked at the Plan tab.
+        """
+        import FreeCAD
+
+        from .freecad_tools import PARAM_PATH
+
+        if self._dock is None:
+            return
+        FreeCAD.ParamGet(PARAM_PATH).SetBool(
+            self._visible_pref(), not self._dock.isHidden())
 
     def show_dock(self):
         """Show the dock without raising it -- a panel that wants the front tab

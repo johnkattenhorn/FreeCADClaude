@@ -293,6 +293,8 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False   # did the current reasoning burst stream real text (vs. redacted)?
         self._tool_entries = {}       # tool_use_id -> CollapsibleSection, awaiting its result
         self._status_text = ""        # last worker status ("ready"/"closed"), shown when idle
+        self._chat_key = None         # document this conversation belongs to (chat_store.doc_key)
+        self._restored_session_id = None  # Claude session read from disk, adopted by the next worker
         # Coalesces rapid streaming deltas into ~12 renders/sec instead of one
         # full setMarkdown per token.
         self._render_timer = QtCore.QTimer(self)
@@ -306,7 +308,8 @@ class ChatWidget(QtWidgets.QWidget):
         self._slicer_hooked = False
         self._model_hooked = False
         self._build_ui()
-        self._note(_capability_notice())
+        self._install_document_observer()
+        self._on_document_activated()  # loads this document's chat, or the banner
 
     # -- UI construction -------------------------------------------------
 
@@ -433,6 +436,13 @@ class ChatWidget(QtWidgets.QWidget):
         self._thread = QtCore.QThread(self)
         self._worker = AgentWorker(agent_config.build_config(detail, port, token))
         self._worker.moveToThread(self._thread)
+
+        # A conversation restored from disk carries on rather than restarting:
+        # the worker is created lazily on the first turn, so this is the first
+        # moment there is anything to hand the id to.
+        if self._restored_session_id:
+            self._worker.adopt_session(self._restored_session_id)
+            self._restored_session_id = None
 
         # Worker -> GUI (queued automatically across threads).
         self._worker.text_received.connect(self._on_text)
@@ -697,6 +707,7 @@ class ChatWidget(QtWidgets.QWidget):
     def _on_turn_finished(self):
         self._commit_live()
         self._set_busy(False)
+        self._persist_chat()  # after the commit, so the final answer is in it
 
     @QtCore.Slot(str)
     def _on_status(self, status):
@@ -716,6 +727,100 @@ class ChatWidget(QtWidgets.QWidget):
     def _md(self):
         """Plain-Markdown reconstruction of the committed transcript, for eval_runner.py."""
         return self.transcript_view.to_markdown()
+
+    # -- conversations that belong to a document -------------------------
+
+    def _install_document_observer(self):
+        """Follow the active document so the panel shows that drawing's chat.
+
+        FreeCAD has no "active document changed" Qt signal; the documented way
+        in is a document observer, whose slotActivateDocument fires on a switch
+        AND on the first document being opened.
+        """
+        import FreeCAD
+
+        widget = self
+
+        class _Observer:
+            def slotActivateDocument(self, _doc):
+                try:
+                    widget._on_document_activated()
+                except Exception:  # noqa: BLE001 - an observer that raises is removed
+                    pass
+
+            def slotFinishSaveDocument(self, _doc, _label):
+                # Save As gives an unsaved document a key for the first time, so
+                # the conversation held in memory can now be filed under it.
+                try:
+                    widget._on_document_activated()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        self._doc_observer = _Observer()
+        try:
+            FreeCAD.addDocumentObserver(self._doc_observer)
+        except Exception as exc:  # noqa: BLE001 - panel still works, just won't follow
+            FreeCAD.Console.PrintWarning(
+                f"FreeCADClaude: could not follow the active document ({exc})\n"
+            )
+
+    def _persist_chat(self):
+        """Write the current document's conversation. Cheap and idempotent."""
+        import FreeCAD
+
+        from . import chat_store
+
+        if not self._chat_key:
+            return  # unsaved document: nothing stable to file it under
+        session = self._worker.session_id if self._worker is not None else None
+        try:
+            chat_store.save(self._chat_key, session or self._restored_session_id,
+                            self.transcript_view.entries())
+        except Exception as exc:  # noqa: BLE001 - a store we cannot write is not fatal
+            FreeCAD.Console.PrintWarning(
+                f"FreeCADClaude: could not save the conversation ({exc})\n"
+            )
+
+    def _load_chat(self, key):
+        """Show `key`'s conversation, replacing whatever is on screen."""
+        from . import chat_store
+
+        self._chat_key = key
+        self.transcript_view.clear()
+        self._live_entry = None
+        self._live_think_entry = None
+        self._tool_entries.clear()
+
+        session_id, entries = chat_store.load(key)
+        self._restored_session_id = session_id
+        if self._worker is not None:
+            # An existing worker is mid-life for the OLD document; point it at
+            # this one's conversation so the next turn resumes the right chat.
+            self._worker.adopt_session(session_id)
+            self._restored_session_id = None
+
+        if entries:
+            for kind, text in entries:
+                self._add_entry(kind, text)
+        else:
+            self._note(_capability_notice())
+
+    def _on_document_activated(self, *_args):
+        """The user switched drawing: save what was on screen, show the new one's."""
+        import FreeCAD
+
+        from . import chat_store
+
+        key = chat_store.doc_key(FreeCAD.ActiveDocument)
+        if key == self._chat_key:
+            return
+        # Going from an unsaved document to no key at all is not a switch: an
+        # unsaved document's conversation lives only in this transcript, so
+        # clearing it on a spurious activation would silently destroy it.
+        if key is None and self._chat_key is None:
+            return
+        self._persist_chat()
+        self._load_chat(key)
 
     def _note(self, text):
         return self._add_entry("note", text)
@@ -777,6 +882,11 @@ class ChatWidget(QtWidgets.QWidget):
         from . import agent_config, freecad_tools
 
         freecad_tools.new_session_id()
+        from . import chat_store
+
+        # "New" is the one thing that means do not bring this back.
+        chat_store.forget(self._chat_key)
+        self._restored_session_id = None
         if self._worker is not None:
             if self._busy:
                 self._worker.cancel()
