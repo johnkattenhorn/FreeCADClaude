@@ -39,6 +39,64 @@ STORE = os.path.join(ROOT, "chats.json")
 MAX_ENTRIES = 64
 
 
+#: Where the Claude Code CLI keeps its own transcript of each session, one
+#: file per session id under a directory named after the working directory.
+CLI_PROJECTS = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+
+def cli_transcript(session_id):
+    """The CLI's own log for `session_id`, or None.
+
+    This is the good source. The panel's stream.jsonl records what came OUT of
+    the CLI, so it has Claude's side only -- each question goes in as a `-p`
+    argument and never appears in the output. The CLI's own transcript has
+    both, because it is what --resume reads.
+
+    Searched rather than derived: the file sits under a directory named after
+    the CLI's working directory, and reproducing that mangling here would be
+    one more thing to get wrong.
+    """
+    if not os.path.isdir(CLI_PROJECTS):
+        return None
+    for project in os.listdir(CLI_PROJECTS):
+        candidate = os.path.join(CLI_PROJECTS, project, session_id + ".jsonl")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def read_cli_transcript(path):
+    """Both sides of the conversation, from the CLI's own session log."""
+    entries = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            kind = {"user": "you", "assistant": "claude"}.get(event.get("type"))
+            if kind is None:
+                continue
+            content = (event.get("message") or {}).get("content")
+            if isinstance(content, str):
+                # A question the user typed. Tool results arrive as lists, so a
+                # bare string here is always something a person wrote.
+                text = content.strip()
+                if text:
+                    entries.append((kind, text))
+            elif isinstance(content, list):
+                for block in content:
+                    if block.get("type") != "text":
+                        continue
+                    text = (block.get("text") or "").strip()
+                    if text:
+                        entries.append((kind, text))
+    return entries
+
+
 def sessions():
     """Session folders that hold a usable transcript, oldest first."""
     found = []
@@ -47,6 +105,14 @@ def sessions():
         if not os.path.isfile(path):
             continue
         entries, session_id = read_stream(path)
+        # Prefer the CLI's own transcript when it is still there: it has the
+        # questions as well as the answers.
+        if session_id:
+            cli = cli_transcript(session_id)
+            if cli:
+                both = read_cli_transcript(cli)
+                if both:
+                    entries = both
         if entries:
             found.append((name, session_id, entries))
     return found
