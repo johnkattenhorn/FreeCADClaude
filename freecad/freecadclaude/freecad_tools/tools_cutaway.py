@@ -101,7 +101,8 @@ def _resolve_clip_plane(args, doc, keep_names=None):
 
 def _insert_clip_plane(view, clip):
     """Insert `clip` (an SoClipPlane) into `view`'s scene graph so it clips all
-    geometry in world space.
+    geometry in world space. Returns the group it went into, so the caller can
+    take it back out before the view is destroyed -- see _run_cutaway.
 
     Coin issues glClipPlane under the camera's viewing matrix, so the node must
     be traversed AFTER the camera or the plane lands in the wrong space.
@@ -126,10 +127,11 @@ def _insert_clip_plane(view, clip):
                 idx = parent.findChild(cam)
                 if idx >= 0:
                     parent.insertChild(clip, idx + 1)
-                    return
+                    return parent
     except Exception:  # noqa: BLE001 - fall back to the simple post-camera insert
         pass
     sg.insertChild(clip, 0)
+    return sg
 
 
 _CUTAWAY_SCHEMA = {
@@ -217,52 +219,81 @@ def _run_cutaway(args):
         # _insert_clip_plane for the camera-order nuance). It clips only this
         # throwaway view and is discarded when the view closes, so the user's
         # real view and the document stay untouched.
+        # ref() before the node goes anywhere near the scene graph, and detach
+        # it again in the finally below.
+        #
+        # Without that pairing this segfaults, not reliably but often enough:
+        # _close_offscreen_view closes a WA_DeleteOnClose subwindow, so Qt
+        # DEFERS destroying the inner View3DInventorViewer to a posted event.
+        # By the time that runs this function has returned and the Python
+        # wrapper for `clip` is being collected. The graph teardown unrefs the
+        # node to zero and Coin deletes it; the wrapper is deallocated after
+        # that and touches freed memory. The crash surfaces as SIGSEGV inside
+        # View3DInventorViewer::~View3DInventorViewer -> _Py_Dealloc, with
+        # nothing in the traceback to say a clip plane was ever involved.
+        #
+        # Holding a reference and removing the child ourselves keeps the node's
+        # whole lifetime on this side, so the deferred teardown has nothing of
+        # Python's left to destroy.
         clip = coin.SoClipPlane()
-        clip.plane.setValue(plane)
-        clip.on.setValue(True)
+        clip.ref()
+        clip_parent = None
         try:
-            _insert_clip_plane(view, clip)
-        except Exception as exc:  # noqa: BLE001
-            return f"Could not apply the clip plane to the view: {exc!r}"
+            clip.plane.setValue(plane)
+            clip.on.setValue(True)
+            try:
+                clip_parent = _insert_clip_plane(view, clip)
+            except Exception as exc:  # noqa: BLE001
+                return f"Could not apply the clip plane to the view: {exc!r}"
 
-        # Only the requested objects are visible in here, so the clip applies to
-        # just them and _apply_camera_plan's fitAll frames them.
-        err = _apply_camera_plan(view, plan)
-        if err:
-            return err
+            # Only the requested objects are visible in here, so the clip applies to
+            # just them and _apply_camera_plan's fitAll frames them.
+            err = _apply_camera_plan(view, plan)
+            if err:
+                return err
 
-        if extents:
-            crop_warning = _apply_extent_crop(view, doc, extents, setup["aspect"], keep_set)
+            if extents:
+                crop_warning = _apply_extent_crop(view, doc, extents, setup["aspect"], keep_set)
 
-        # Direction is unchanged by fitAll, so this matches the saved image.
-        measured = _orbit_angles_from_view(view)
+            # Direction is unchanged by fitAll, so this matches the saved image.
+            measured = _orbit_angles_from_view(view)
 
-        # Detect the "cut looks unclipped" degenerate case: the camera sits ON
-        # the kept side, looking further into it, so the (removed) far half was
-        # already hidden behind the intact near half -- nothing visibly changes
-        # from an ordinary capture_view. That's the case exactly when the
-        # camera's view direction points opposite the plane's kept-side normal
-        # (dot near -1); dot near +1 means the camera is on the removed side
-        # looking INTO the opened cavity, which is what reveals the cut.
-        try:
-            d = view.getViewDirection()
-            dot = d.x * clip_normal[0] + d.y * clip_normal[1] + d.z * clip_normal[2]
-        except Exception:  # noqa: BLE001
-            dot = None
-        if dot is not None and dot < -0.75:
-            degenerate_warning = (
-                "Warning: this camera angle looks straight at the KEPT half's outer "
-                "surface, not into the cut -- the image likely looks identical to an "
-                "uncropped capture_view. To actually see inside, change EXACTLY ONE "
-                "of 'keep' or 'view' (not both -- flipping both together cancels out "
-                "and lands back on this same angle): either keep this 'view' and flip "
-                "'keep' to the other side, or keep 'keep' as-is and move the camera to "
-                "the opposite side (e.g. the opposite 'view' preset, or azimuth+180)."
-            )
+            # Detect the "cut looks unclipped" degenerate case: the camera sits ON
+            # the kept side, looking further into it, so the (removed) far half was
+            # already hidden behind the intact near half -- nothing visibly changes
+            # from an ordinary capture_view. That's the case exactly when the
+            # camera's view direction points opposite the plane's kept-side normal
+            # (dot near -1); dot near +1 means the camera is on the removed side
+            # looking INTO the opened cavity, which is what reveals the cut.
+            try:
+                d = view.getViewDirection()
+                dot = d.x * clip_normal[0] + d.y * clip_normal[1] + d.z * clip_normal[2]
+            except Exception:  # noqa: BLE001
+                dot = None
+            if dot is not None and dot < -0.75:
+                degenerate_warning = (
+                    "Warning: this camera angle looks straight at the KEPT half's outer "
+                    "surface, not into the cut -- the image likely looks identical to an "
+                    "uncropped capture_view. To actually see inside, change EXACTLY ONE "
+                    "of 'keep' or 'view' (not both -- flipping both together cancels out "
+                    "and lands back on this same angle): either keep this 'view' and flip "
+                    "'keep' to the other side, or keep 'keep' as-is and move the camera to "
+                    "the opposite side (e.g. the opposite 'view' preset, or azimuth+180)."
+                )
 
-        # Last, so it reshapes whatever frame we ended up with (fitAll or crop).
-        width, height = _fit_render_size(view, doc, setup)
-        _save_view_png(view, png_path, width, height)
+            # Last, so it reshapes whatever frame we ended up with (fitAll or crop).
+            width, height = _fit_render_size(view, doc, setup)
+            _save_view_png(view, png_path, width, height)
+        finally:
+            # Detach and release while this frame still owns the node. Doing it
+            # here rather than leaving it to the view's deferred teardown is the
+            # whole point -- see the comment above.
+            if clip_parent is not None:
+                try:
+                    clip_parent.removeChild(clip)
+                except Exception:  # noqa: BLE001 - graph already torn down
+                    pass
+            clip.unref()
 
     text = f"Cutaway at {clip_desc}, saved to {png_path}."
     text += _camera_angle_note(_measured_angles(measured, plan))
