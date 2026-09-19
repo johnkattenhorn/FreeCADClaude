@@ -159,9 +159,28 @@ def _suspend_selection(doc):
     import FreeCADGui
 
     try:
-        saved = list(FreeCADGui.Selection.getSelectionEx(doc.Name))
+        current = FreeCADGui.Selection.getSelectionEx(doc.Name)
     except Exception:  # noqa: BLE001
         return []
+
+    # Copy out NAMES, not SelectionObjects. A SelectionObject is a view onto a
+    # live selection entry: clearSelection() takes that entry away, and the
+    # object is then holding a pointer to something that has gone. Reading
+    # .Object off it afterwards, or handing it back to addSelection, is a
+    # dangling reference -- and it is created on every capture that runs with
+    # anything selected, which is what all four crashes of 2026-09-19 had in
+    # common. Strings survive the clear; pointers do not.
+    saved = []
+    for sel in current:
+        try:
+            saved.append((
+                doc.Name,
+                sel.ObjectName,
+                tuple(getattr(sel, "SubElementNames", None) or ()),
+            ))
+        except Exception:  # noqa: BLE001 - entry already gone; nothing to restore
+            continue
+
     if saved:
         try:
             FreeCADGui.Selection.clearSelection(doc.Name)
@@ -171,28 +190,22 @@ def _suspend_selection(doc):
 
 
 def _restore_selection(saved):
-    """Re-add the selection cleared by _suspend_selection, sub-elements and all."""
+    """Re-add the selection cleared by _suspend_selection, sub-elements and all.
+
+    Everything here is a name. Nothing held across the capture refers to a
+    document object, so an object removed in the meantime makes a restore fail
+    harmlessly rather than handing FreeCAD something to dereference later.
+    """
     if not saved:
         return
     import FreeCADGui
 
-    for sel in saved:
-        # An object removed between the suspend and the restore leaves a
-        # SelectionObject pointing at nothing. Re-adding it hands FreeCAD a
-        # dangling reference, which does not raise here -- it crashes later,
-        # somewhere else.
+    for doc_name, obj_name, subs in saved:
         try:
-            if getattr(sel, "Object", None) is None:
-                continue
-            sel.Object.Name  # touching a removed object raises rather than crashing
-        except Exception:  # noqa: BLE001
-            continue
-        try:
-            subs = list(getattr(sel, "SubElementNames", None) or [])
             if subs:
                 for sub in subs:
-                    FreeCADGui.Selection.addSelection(sel.Object, sub)
+                    FreeCADGui.Selection.addSelection(doc_name, obj_name, sub)
             else:
-                FreeCADGui.Selection.addSelection(sel.Object)
-        except Exception:  # noqa: BLE001
+                FreeCADGui.Selection.addSelection(doc_name, obj_name)
+        except Exception:  # noqa: BLE001 - object gone, or renamed: nothing to do
             pass
