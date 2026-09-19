@@ -30,10 +30,8 @@ What this fork adds:
   chance. See [`docs/FORK.md`](docs/FORK.md); the selection one is a bug in
   upstream and has been reported there.
 
-Corrections to upstream's text below, kept because the rest of it is accurate
-and worth reading: it says `Edit` is disabled — it is not, `Write` and `Edit`
-have been in `_WRITE_TOOLS` for some time. `Bash` was the one that was off, and
-in this fork it is on.
+Everything below this section is upstream's own documentation, corrected where
+this fork changed what it describes.
 
 *Unofficial community project — not affiliated with, endorsed by, or sponsored
 by Anthropic. "Claude" is a trademark of Anthropic, PBC. It drives your own
@@ -44,14 +42,18 @@ subscription; intended for personal use.*
 > authenticating with your own Claude account (no API key, no cost). Replies
 > stream into the UI from a background thread, and Claude can act on the live
 > document through a curated set of tools: it reads objects and selections,
-> *sees* your geometry via screenshots and section (cutaway) views, inspects the
-> API, exports files, and runs Python against the document inside an undoable
-> transaction (`run_python`).
+> *sees* your geometry via screenshots and section views, cuts the model open in
+> your own view with `clip_view`, inspects the API, exports files, and runs
+> Python against the document inside an undoable transaction (`run_python`).
+> The screenshot tools can be switched off entirely, for a panel that works from
+> measurements and leaves looking to the person with the window open.
 >
-> **What it can touch:** the only path that changes your document is
-> `run_python`, and on error the transaction is rolled back. `Write` can create
-> or overwrite files on disk (but never the live document); every other tool is
-> read-only. `Bash` and `Edit` are disabled.
+> **What it can touch:** `run_python` is the only path that changes your
+> document, and on error the transaction is rolled back. `Write` and `Edit`
+> create and change files on disk but never the live document. **`Bash` is on in
+> this fork**, so a turn can also run your project's build, its tests, and any
+> other command your account can run. Upstream left the shell off; see
+> [`docs/FORK.md`](docs/FORK.md) for why that line did not hold.
 >
 > **On a phone or tablet:** press **Connect Mobile** and the panel starts a small web
 > server *on your local network* and shows a QR code. Scan it and you get a pen
@@ -71,6 +73,20 @@ subscription; intended for personal use.*
 > deliberate choice for a personal-use addon. Don't point it at work you can't
 > afford to lose, and save (or enable the `SaveSteps` preference) before long
 > builds.
+
+## The panel's buttons
+
+| | |
+|---|---|
+| **Send** / **Stop** | Send a turn; cancel the running one, keeping what already streamed |
+| **New** | Fresh conversation. **Deletes this document's stored chat** |
+| **📎 Attach** | Pick files for the next message. Copied into the session folder, because the CLI reads only inside its own directories |
+| **📱 Connect Mobile** | Pen canvas on your phone. Starts a server **on your LAN** — off until pressed |
+| **🖨 Slicer** | Export what is visible and open it in your slicer |
+
+**📎 Attach** and **🖨 Slicer** are this fork's. Upstream has *Open Files*, which
+opens the artifacts folder, and a *Slicer* button that opens only the settings
+page.
 
 ## Quick install
 
@@ -312,11 +328,16 @@ opens the toolpath in your own browser: an interactive 3D view with per-feature
 colours and a layer slider.
 
 Presets come from Bambu Studio's own current selection with the nozzle pinned to
-0.4, so on a machine with Studio set up there is nothing to configure. To change
-the printer, nozzle, process or filament, press **🖨 Slicer** in the chat panel —
-that opens the same page, with the settings drawer, and needs no slice and no
-message to Claude. Your choice is stored in `~/FreeCADClaude/slicer.json` and
-outranks Studio's selection on the next slice.
+0.4, so on a machine with Studio set up there is nothing to configure. Your
+choice is stored in `~/FreeCADClaude/slicer.json` and outranks Studio's
+selection on the next slice.
+
+**🖨 Slicer** in the chat panel exports what is visible, oriented the way each
+part prints, and opens it: one part as STL, several as 3MF so they stay
+separate. It uses whatever your desktop associates with that format, falling
+back to a slicer it can find. With no slicer and nothing to send, it opens the
+settings page instead, which is also where the printer, nozzle, process and
+filament are chosen before a first slice.
 
 Each job's artifacts land in `~/FreeCADClaude/<session-id>/slices/<job>/`: the
 3MF that was handed over, the G-code and `result.json` that came back, the

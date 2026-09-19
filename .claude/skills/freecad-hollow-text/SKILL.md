@@ -189,6 +189,10 @@ second" rule applies here too:
   outline (since the wall is added outward, not carved inward) — a minor,
   expected softening of the letterforms, not a bug. Mention it if the user
   seems to expect an exact silhouette match.
+> The screenshot tools can be switched off, in which case `capture_view` is
+> absent from your tool list. Move the user's own view instead and ask them what
+> they see, or check the geometry numerically with `describe_objects`.
+
 - **Look at the result from an angle.** `capture_view` from an angled/shaded 3D
   view, never just a flat top-down one: a wrongly-open counter (step 6) is
   invisible from directly above, and a run that finished without a segfault
