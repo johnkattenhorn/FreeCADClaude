@@ -82,6 +82,43 @@ you can't afford to lose.
 ℹ️ Click **📱 Connect Mobile** to send and receive images from your phone or
   iPad, for annotation or ideation."""
 
+#: Project mode's banner. It replaces the one above rather than appending to it,
+#: because that one's central claim -- that Claude changes the model by running
+#: Python in the document -- is the opposite of what happens here, and a notice
+#: that has to be read twice to find out which half applies is not a notice.
+#:
+#: It names the shell. A banner whose job is to say what a turn can reach cannot
+#: leave out the one tool that can reach anything.
+_PROJECT_NOTICE = """### What Claude can do here — project mode
+
+📁 **Project:** `{project}`
+
+The scripts in that folder are the source of the geometry, and the document in
+front of you is their output. Claude changes the model by editing a script and
+building it, so its work lands in files you can read, diff and revert. Anything
+changed in the document by hand is gone at the next build.
+
+⚠️ **Claude acts immediately — there is no approval prompt.** It can edit and
+create files, and it has a **shell**, so it can run this project's build, its
+tests and any other command your account can run. That reaches beyond the
+project folder. Commit before a long session, and don't point it at work you
+can't afford to lose.
+
+ℹ️ A copy of every python script and conversation is kept under `~/FreeCADClaude/`.
+
+ℹ️ Clear the `ProjectDir` preference to go back to working on the document
+  directly."""
+
+
+def _capability_notice():
+    """The banner for the mode this conversation is actually in."""
+    from . import agent_config
+
+    project = agent_config.get_project_dir()
+    if project:
+        return _PROJECT_NOTICE.format(project=project)
+    return _CAPABILITY_NOTICE
+
 
 def _format_tool_input(inp):
     """Render a tool's input args as a Markdown fragment for its detail entry."""
@@ -269,7 +306,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._slicer_hooked = False
         self._model_hooked = False
         self._build_ui()
-        self._note(_CAPABILITY_NOTICE)
+        self._note(_capability_notice())
 
     # -- UI construction -------------------------------------------------
 
@@ -765,7 +802,7 @@ class ChatWidget(QtWidgets.QWidget):
             plan_panel.get_panel().widget.clear()
         except Exception:  # noqa: BLE001
             pass
-        self._note(_CAPABILITY_NOTICE)
+        self._note(_capability_notice())
 
     def _reset_device_session(self):
         """Point the device server at the new conversation and forget the old

@@ -143,5 +143,39 @@ class ReloadParts(unittest.TestCase):
             self.assertIsNone(tools_project._precheck_reload_parts({"paths": ["x.step"]}))
 
 
+
+class CapabilityNotice(unittest.TestCase):
+    """The banner must describe the mode the conversation is actually in.
+
+    It is the only place the user is told what a turn can reach, so a banner
+    that still describes document mode while a shell is enabled is worse than
+    no banner: it is a specific, reassuring, wrong answer.
+    """
+
+    def setUp(self):
+        from freecad.freecadclaude import chat_panel
+
+        self.chat_panel = chat_panel
+        from freecad.freecadclaude import agent_config
+
+        self.agent_config = agent_config
+        self._real = agent_config.get_project_dir
+
+    def tearDown(self):
+        self.agent_config.get_project_dir = self._real
+
+    def test_project_mode_names_project_and_shell(self):
+        self.agent_config.get_project_dir = lambda: "/home/john/Code/cad-lab"
+        text = self.chat_panel._capability_notice()
+        self.assertIn("/home/john/Code/cad-lab", text)
+        self.assertIn("shell", text)
+        self.assertNotIn("add, edit or delete any object", text)
+
+    def test_document_mode_is_upstreams_notice_untouched(self):
+        self.agent_config.get_project_dir = lambda: None
+        text = self.chat_panel._capability_notice()
+        self.assertEqual(text, self.chat_panel._CAPABILITY_NOTICE)
+        self.assertIn("add, edit or delete any object", text)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
