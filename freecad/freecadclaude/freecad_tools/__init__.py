@@ -99,6 +99,7 @@ from .tools_notes import (
     _run_document_notes,
     _run_set_print_direction,
 )
+from .tools_clip import _CLIP_VIEW_SCHEMA, _run_clip_view
 from .tools_project import (
     _RELOAD_PARTS_SCHEMA,
     _precheck_reload_parts,
@@ -164,6 +165,7 @@ TOOLS = {
     },
     "crop_view": {"schema": _CROP_VIEW_SCHEMA, "run": _run_crop_view},
     "cutaway": {"schema": _CUTAWAY_SCHEMA, "run": _run_cutaway},
+    "clip_view": {"schema": _CLIP_VIEW_SCHEMA, "run": _run_clip_view},
     "export": {"schema": _EXPORT_SCHEMA, "run": _run_export},
     "slice_model": {
         "schema": _SLICE_MODEL_SCHEMA,

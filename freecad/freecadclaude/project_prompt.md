@@ -49,6 +49,10 @@ So:
   for a face they should look at, `DiffuseColor` to colour several at once.
   Say which colour means what, and say when a change is scratch and will not
   survive a rebuild.
+- **Cut it open where they can see it** with `clip_view`, not `cutaway`.
+  cutaway renders a picture of a view they are not looking at; `clip_view`
+  clips their own view and leaves it clipped, so they can orbit the section
+  and click the exposed faces. Say that it is on and how to remove it.
 - **Capture afterwards, and only if you need to check your own work.** The
   capture tools render through the user's own view now, so a capture that
   orbits moves what they are looking at -- fine when they asked to be shown
