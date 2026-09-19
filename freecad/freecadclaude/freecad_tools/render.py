@@ -195,11 +195,38 @@ def _close_offscreen_view(subwindow, prev_view=None):
     actually had open. Closing a QMdiSubWindow makes Qt re-pick an active
     subwindow via its own activation-history bookkeeping; reasserting
     `prev_view` afterwards makes sure that pick is the user's real previous
-    view, not whatever QMdiArea happened to land on."""
+    view, not whatever QMdiArea happened to land on.
+
+    The close is then FLUSHED rather than left to Qt's own timing, because a
+    deferred destructor here is a segfault:
+
+        SIGSEGV
+        #1  _Py_Dealloc
+        #2  Gui::View3DInventorViewer::~View3DInventorViewer()
+
+    WA_DeleteOnClose does not destroy the widget at close(); it posts a
+    DeferredDelete event. That event is delivered back in the main event loop,
+    long after the tool call has returned -- by which point _offscreen_shot's
+    generator frame, and the `view` proxy the caller was handed, may already
+    have been collected. The viewer's destructor releases Python references it
+    owns, and it releases them onto freed memory.
+
+    Flushing here runs the destructor while this frame still holds everything
+    it refers to, which is the order that is actually safe. It is timing
+    dependent, so it does not fire every time -- observed twice on 2026-09-19,
+    both times immediately after a cutaway.
+    """
     if subwindow is not None:
         try:
-            subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
+            subwindow.close()  # WA_DeleteOnClose -- posts a DeferredDelete
         except Exception:  # noqa: BLE001
+            pass
+        try:
+            from PySide import QtCore, QtWidgets
+
+            QtWidgets.QApplication.sendPostedEvents(
+                None, QtCore.QEvent.DeferredDelete)
+        except Exception:  # noqa: BLE001 - worst case we are back to Qt's timing
             pass
     if prev_view is not None:
         try:
