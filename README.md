@@ -99,7 +99,7 @@ Pro/Max plan).
 ```powershell
 npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
 claude                                      # log in once (opens a browser), then exit
-git clone <this fork's URL> `
+git clone https://github.com/johnkattenhorn/FreeCADClaude `
   "$env:APPDATA\FreeCAD\v1-1\Mod\FreeCADClaude"
 ```
 
@@ -107,7 +107,7 @@ git clone <this fork's URL> `
 ```bash
 npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
 claude                                      # log in once (opens a browser), then exit
-git clone <this fork's URL> \
+git clone https://github.com/johnkattenhorn/FreeCADClaude \
   "$HOME/Library/Application Support/FreeCAD/v1-1/Mod/FreeCADClaude"
 ```
 
@@ -169,7 +169,7 @@ first, then:
 2. Open its configuration — the **⚙ gear** icon in the Addon Manager window (or
    **Edit → Preferences → Addon Manager**) — and under **Custom repositories**
    add a new entry:
-   - **Repository URL:** this fork's URL (upstream is
+   - **Repository URL:** `https://github.com/johnkattenhorn/FreeCADClaude` (upstream is
      `https://github.com/tinkerindustries/FreeCADClaude`)
    - **Branch:** `main`
 3. Close preferences; back in the Addon Manager the addon now appears in the
@@ -214,7 +214,7 @@ The result should be `…/Mod/FreeCADClaude/` containing `Init.py`, `InitGui.py`
 
 - **git clone** straight into the Mod dir:
   ```bash
-  git clone <this fork's URL> "<Mod dir>/FreeCADClaude"
+  git clone https://github.com/johnkattenhorn/FreeCADClaude "<Mod dir>/FreeCADClaude"
   ```
 - **Copy** the folder into the Mod dir manually.
 - **Windows dev** — from a clone, `pwsh -File deploy.ps1` copies it into the
