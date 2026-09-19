@@ -143,40 +143,6 @@ def _force_draw_style(view, style=_DEFAULT_STYLE):
         pass
 
 
-#: One reusable offscreen view per document, {doc.Name: (view, subwindow)}.
-#: Deliberately never emptied while FreeCAD runs -- see _close_offscreen_view.
-_OFFSCREEN_VIEWS = {}
-
-
-def _reuse_offscreen_view(doc_name):
-    """This document's existing offscreen view, readied for another capture.
-
-    None when there isn't one, or when the one we had has been destroyed
-    underneath us anyway -- closing the document does that. A cache entry
-    pointing at a deleted C++ object is exactly the dangling reference this
-    whole change exists to avoid, so a stale one is discarded rather than
-    handed back.
-
-    Separate from _offscreen_view because that one needs a live GUI before it
-    reaches any of this, which left the decision unreachable to a test.
-    """
-    cached = _OFFSCREEN_VIEWS.get(doc_name)
-    if cached is None:
-        return None
-    view, subwindow = cached
-    try:
-        subwindow.show()  # raises if Qt destroyed it underneath us
-        view.setAnimationEnabled(False)
-    except Exception:  # noqa: BLE001
-        _OFFSCREEN_VIEWS.pop(doc_name, None)
-        return None
-    try:
-        _force_draw_style(view)
-    except Exception:  # noqa: BLE001 - cosmetic; not worth losing the view over
-        pass
-    return view, subwindow
-
-
 def _offscreen_view(doc):
     """A throwaway 3D view of `doc`, for capture_view to render through
     instead of whatever view/tab the user actually has open -- so a
@@ -209,11 +175,6 @@ def _offscreen_view(doc):
 
     prev_view = FreeCADGui.activeView()
 
-    reused = _reuse_offscreen_view(doc.Name)
-    if reused is not None:
-        view, subwindow = reused
-        return view, subwindow, prev_view
-
     before = _mdi_subwindows()
     view = gui_doc.createView("Gui::View3DInventor")
     if view is None:
@@ -227,15 +188,6 @@ def _offscreen_view(doc):
     _force_draw_style(view)
 
     subwindow = next(iter(_mdi_subwindows() - before), None)
-    if subwindow is not None:
-        # Qt must not destroy it on close: this one outlives every call.
-        try:
-            from PySide import QtCore
-
-            subwindow.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
-        except Exception:  # noqa: BLE001
-            pass
-        _OFFSCREEN_VIEWS[doc.Name] = (view, subwindow)
     return view, subwindow, prev_view
 
 
@@ -246,29 +198,16 @@ def _close_offscreen_view(subwindow, prev_view=None):
     `prev_view` afterwards makes sure that pick is the user's real previous
     view, not whatever QMdiArea happened to land on.
 
-    The view is HIDDEN, not closed. Destroying it is what crashes:
-
-        SIGSEGV
-        #1  _Py_Dealloc
-        #2  Gui::View3DInventorViewer::~View3DInventorViewer()
-
-    Four times on 2026-09-19, after a cutaway twice and after a capture_view
-    twice -- so it is the teardown itself, not any one tool. The viewer's
-    destructor releases Python references it owns and they are not always still
-    valid. Two attempts to fix the ORDER failed: taking the clip plane out of
-    the graph first, then flushing the DeferredDelete so the destructor ran
-    inside the call rather than later. The second made it worse; the flush
-    itself appears in the fourth crash's stack, called from Python, which is
-    what ruled the theory out.
-
-    So stop destroying it. _offscreen_view keeps one view per document and
-    hands the same one back every time, and this hides it instead of closing
-    it. The destructor then runs once, during shutdown, when a viewer releasing
-    a stale reference no longer has anywhere to crash.
+    The subwindow is closed and destroyed, as it always was. An earlier
+    attempt to keep and reuse it -- on the theory that the destructor was the
+    crash -- was wrong twice over: the real cause was the selection being held
+    across clearSelection (see visibility._suspend_selection), and FreeCAD
+    treats every View3DInventor as a document view, so one that is never
+    destroyed leaves a second tab in the tab bar and a save prompt behind it.
     """
     if subwindow is not None:
         try:
-            subwindow.hide()
+            subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
         except Exception:  # noqa: BLE001
             pass
     if prev_view is not None:
