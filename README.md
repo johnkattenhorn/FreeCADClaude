@@ -1,5 +1,15 @@
 # FreeCADClaude (FreeCAD addon)
 
+> **This is a fork.** Modified 2026-09-19 from
+> [tinkerindustries/FreeCADClaude](https://github.com/tinkerindustries/FreeCADClaude):
+> adds a **project mode** where a repo's Python scripts are the source of truth and
+> the document is their output, with `Bash` and a `reload_parts` tool to close the
+> loop. Unset `ProjectDir` and upstream's behaviour is unchanged.
+> See [`docs/FORK.md`](docs/FORK.md). LGPL-2.1-or-later, as upstream.
+>
+> Note: upstream's text below says `Edit` is disabled. It is not — `Write` and
+> `Edit` have been in `_WRITE_TOOLS` for some time. Only `Bash` was off.
+
 A FreeCAD workbench that docks a **Claude chat panel** on the right-hand side
 of the main window and lets Claude act on the active document through a curated
 set of FreeCAD tools.
