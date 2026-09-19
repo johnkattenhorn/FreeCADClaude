@@ -73,9 +73,10 @@ _CAPABILITY_NOTICE = """### What Claude can do here
 
 ⚠️ **Claude acts on your document immediately — there is no approval prompt.** It
 runs Python inside FreeCAD, so it can add, edit or delete any object in the open
-file, and read or write files on this computer. It can also screenshot, section
-and export the model. Save your work before a long build, and don't point it at a file
-you can't afford to lose.
+file, and it has a **shell**, so it can read or write files and run any command
+your account can. It can also screenshot, section and export the model. Save
+your work before a long build, and don't point it at a file you can't afford to
+lose.
 
 ℹ️ A copy of every python script and conversation is kept under `~/FreeCADClaude/`.
 
@@ -89,14 +90,13 @@ you can't afford to lose.
 #:
 #: It names the shell. A banner whose job is to say what a turn can reach cannot
 #: leave out the one tool that can reach anything.
-_PROJECT_NOTICE = """### What Claude can do here — project mode
+_PROJECT_NOTICE = """### What Claude can do here
 
-📁 **Project:** `{project}`
+📁 **This drawing was built by a script** in `{project}`
 
-The scripts in that folder are the source of the geometry, and the document in
-front of you is their output. Claude changes the model by editing a script and
-building it, so its work lands in files you can read, diff and revert. Anything
-changed in the document by hand is gone at the next build.
+So it is output, not source. Claude changes the model by editing that script and
+running it, which means its work lands in files you can read, diff and revert.
+Anything changed in the document by hand is gone at the next build.
 
 ⚠️ **Claude acts immediately — there is no approval prompt.** It can edit and
 create files, and it has a **shell**, so it can run this project's build, its
@@ -104,19 +104,18 @@ tests and any other command your account can run. That reaches beyond the
 project folder. Commit before a long session, and don't point it at work you
 can't afford to lose.
 
-ℹ️ A copy of every python script and conversation is kept under `~/FreeCADClaude/`.
-
-ℹ️ Clear the `ProjectDir` preference to go back to working on the document
-  directly."""
+ℹ️ A copy of every python script and conversation is kept under `~/FreeCADClaude/`."""
 
 
 def _capability_notice():
     """The banner for the mode this conversation is actually in."""
     from . import agent_config
 
-    project = agent_config.get_project_dir()
-    if project:
-        return _PROJECT_NOTICE.format(project=project)
+    import FreeCAD
+
+    root = agent_config.project_root(FreeCAD.ActiveDocument)
+    if root:
+        return _PROJECT_NOTICE.format(project=root)
     return _CAPABILITY_NOTICE
 
 
@@ -145,12 +144,10 @@ def _skill_search_dirs():
     from . import agent_config
 
     dirs = []
-    cwd = agent_config.get_project_dir()
-    if not cwd:
-        try:
-            cwd = agent_config.session_workspace()
-        except Exception:  # noqa: BLE001
-            cwd = None
+    try:
+        cwd = agent_config.session_workspace()
+    except Exception:  # noqa: BLE001
+        cwd = None
     if cwd:
         dirs.append(os.path.join(cwd, ".claude", "skills"))
     dirs.append(os.path.join(os.path.expanduser("~"), ".claude", "skills"))

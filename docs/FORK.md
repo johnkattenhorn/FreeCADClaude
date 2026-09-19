@@ -4,36 +4,49 @@ Forked from [tinkerindustries/FreeCADClaude](https://github.com/tinkerindustries
 on 2026-09-19. LGPL-2.1-or-later, same as upstream, with upstream's notices
 intact. Changes below; everything else is upstream's work.
 
-## Project mode
+## One mode, and it works out which kind of drawing this is
 
 Upstream's contract: the live FreeCAD document is the source, and `run_python`
-is the only thing that changes it. Right answer for a model built in the GUI.
+is the only thing that changes it. Right for a model built in the GUI.
 
-Wrong answer for a repo whose Python scripts build the geometry — `cad-lab` is
-one. There, `out/*.step` is output. Edit the document by hand and the change
-disappears at the next build, silently, with nothing in `git diff` to show it
-ever happened.
+Wrong for a document a script produced, where `out/*.step` is output. Edit it by
+hand and the change disappears at the next build, silently, with nothing in
+`git diff` to show it happened.
 
-Rather than swap one rule for the other, it is a mode. Set the `ProjectDir`
-preference under
-`User parameter:BaseApp/Preferences/Mod/FreeCADClaude` to a checkout:
+The first attempt at this was a `ProjectDir` preference selecting a mode. That
+was the wrong shape: which kind of drawing is open is a **fact about the
+drawing**, not a setting, and one global value could only ever be right for one
+document at a time.
 
-| | `ProjectDir` unset | `ProjectDir` set |
-|---|---|---|
-| Source of truth | the document | the project's scripts |
-| Geometry changes via | `run_python` | `Edit` the script, then `reload_parts` |
-| `run_python` | mutates | measures only |
-| Shell | none | `Bash` |
-| CLI cwd | the session folder | the project |
-| System prompt | `system_prompt.md` | that, plus `project_prompt.md` |
+So there is no mode. `reload_parts` records the file every object was built
+from in an `FCCSourceFile` property, and `agent_config.source_files` reads it
+back:
 
-Unset is upstream's behaviour, untouched.
+| the open document | what it means |
+|---|---|
+| no `FCCSourceFile` on its objects | somebody drew it. `run_python` changes it, save it as a `.FCStd` |
+| objects carry `FCCSourceFile` | a script built it. Geometry changes go in the script, then `reload_parts` |
 
-## Bash
+`project_root` walks up from the source file to the enclosing git working tree,
+which is passed to the CLI with `--add-dir`.
 
-On in project mode only. A code-CAD loop is impossible without it: the part
-script has to be run before its output exists. Off without a project, where
-there is nothing for it to build.
+"Give me a script that rebuilds this" is a request, not a setting. The agent
+writes the script, runs it and reloads the result; from then on the objects
+carry their source and the document is a built one.
+
+## `Bash`
+
+Always on. A drawing built by a script needs its script run, and making a
+hand-drawn one reproducible needs the same.
+
+Upstream left it off on the grounds that `run_python` was the only path to the
+document. That reasoning does not survive its own code comment: `run_python` is
+arbitrary Python inside the FreeCAD process, so it already reaches the
+filesystem. A shell adds convenience, not reach.
+
+The CLI's cwd is the session folder, not the project. The bundled skills are
+copied there and the CLI discovers skills from its cwd, so running in the
+project is what made `/help` advertise three skills that could not load.
 
 ## `reload_parts`
 
@@ -56,12 +69,13 @@ the tests bite.
 
 ## Known gaps
 
-- The addon's bundled skills are copied into the session folder, and the CLI
-  discovers skills from its cwd. In project mode cwd is the project, so they
-  load only if the project has its own `.claude/skills`.
-- `ProjectDir` has no UI. Set it in **Tools → Edit parameters**.
-- Nothing stops `run_python` editing geometry in project mode. The prompt says
-  not to; it is not enforced.
+- Nothing stops `run_python` editing the geometry of a document a script built.
+  The prompt says not to; it is not enforced.
+- The project root is detected from the FIRST source file when a document holds
+  parts from more than one checkout. Rare, and it picks one rather than failing.
+- A document built before this addon tagged its imports carries no
+  `FCCSourceFile`, so it reads as hand-drawn until something is reloaded into
+  it.
 
 ## Running the tests
 

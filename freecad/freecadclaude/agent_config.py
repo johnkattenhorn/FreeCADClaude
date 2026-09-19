@@ -51,10 +51,10 @@ _SYSTEM_PROMPT_PATH = os.path.join(_MODULE_DIR, "system_prompt.md")
 with open(_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as _f:
     SYSTEM_PROMPT = _f.read().strip().replace("{REFS_DIR}", REFS_REL)
 
-#: Appended to SYSTEM_PROMPT in project mode only (see get_project_dir). Kept in
-#: its own file rather than an if-branch in the prompt, because the two modes
-#: contradict each other: the base prompt tells the agent run_python is how you
-#: change the model, and in project mode that is exactly what it must not do.
+#: Always appended to SYSTEM_PROMPT. Kept in its own file because it qualifies
+#: the base prompt rather than extending it: the base prompt says run_python is
+#: how you change the model, and for a document a script built, that is exactly
+#: what must not happen.
 _PROJECT_PROMPT_PATH = os.path.join(_MODULE_DIR, "project_prompt.md")
 with open(_PROJECT_PROMPT_PATH, "r", encoding="utf-8") as _f:
     PROJECT_PROMPT = _f.read().strip()
@@ -124,12 +124,15 @@ _SKILL_TOOLS = ["Skill"]
 #: this is the one that matches the deploy target.
 _SHELL_TOOLS = ["PowerShell"] if sys.platform == "win32" else []
 
-#: Project mode only. A code-CAD loop is impossible without a shell: the part
-#: script has to be RUN before its output exists, and the project's own tooling
-#: (tests, slicer, git) is how the work gets checked in. Off by default, and off
-#: entirely without a project directory -- with no project there is nothing for
-#: it to build, and it would only widen what a turn can reach for no gain.
-_PROJECT_TOOLS = ["Bash"]
+#: Always on. A drawing built by a script needs its script RUN before the
+#: result exists, and asking for a reproducible script for a drawing built by
+#: hand is a normal request -- neither works without a shell.
+#:
+#: Upstream left it off, on the grounds that run_python was the only path to
+#: the document. That reasoning does not survive its own code comment: run_python
+#: is arbitrary Python inside the FreeCAD process, so it already reaches the
+#: filesystem. A shell adds convenience here, not reach.
+_SHELL = ["Bash"]
 
 
 def get_model():
@@ -202,25 +205,50 @@ def screenshots_enabled():
     return FreeCAD.ParamGet(PARAM_PATH).GetBool("Screenshots", True)
 
 
-def get_project_dir():
-    """The code-CAD project this conversation works in, or None.
+#: Property reload_parts writes on every object it imports, naming the file the
+#: object was built from. Spelled here as well as in tools_project so this
+#: module does not import it and create a cycle.
+SOURCE_PROP = "FCCSourceFile"
 
-    A project is a checkout whose scripts BUILD the geometry -- the FreeCAD
-    document is their output, not the source. Setting it flips the panel into
-    project mode: the CLI runs with the project as its cwd, gains Bash, and
-    carries PROJECT_PROMPT on top of the base system prompt.
 
-    Unset (the default) leaves upstream's behaviour untouched: the live document
-    is the source, run_python is the only thing that changes it, and there is no
-    shell.
+def source_files(document):
+    """Absolute paths the open document's objects were BUILT from.
+
+    Empty for a document somebody drew, which is the ordinary case. Non-empty
+    means the geometry on screen is output: a script produced that file, and a
+    change made to the document by hand disappears the next time it runs.
+
+    This replaces a ProjectDir preference. Which kind of drawing is open is a
+    fact about the drawing, not a setting, and a global preference could only
+    ever be right for one document at a time.
     """
-    path = (FreeCAD.ParamGet(PARAM_PATH).GetString("ProjectDir", "") or "").strip()
-    return path if path and os.path.isdir(path) else None
+    paths = set()
+    for obj in getattr(document, "Objects", None) or ():
+        source = (getattr(obj, SOURCE_PROP, "") or "").strip()
+        if source:
+            paths.add(os.path.abspath(source))
+    return sorted(paths)
 
 
-def save_project_dir(path):
-    """Persist the project dir. Empty string returns the panel to document mode."""
-    FreeCAD.ParamGet(PARAM_PATH).SetString("ProjectDir", path or "")
+def project_root(document):
+    """The checkout a built document came from, or None.
+
+    The git working tree containing its source files, because that is the unit
+    the build script, its tests and its history live in. Without a repository it
+    is the source file's own folder, which at least makes the script reachable.
+    """
+    sources = source_files(document)
+    if not sources:
+        return None
+    folder = os.path.dirname(sources[0])
+    probe = folder
+    while True:
+        if os.path.isdir(os.path.join(probe, ".git")):
+            return probe
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return folder
+        probe = parent
 
 
 def session_workspace():
@@ -271,46 +299,43 @@ def build_config(cli_path, bridge_port, bridge_token):
     allowed_tools = ["mcp__freecad__" + name for name in tool_names]
 
     skills_dir = get_skills_dir()
-    project_dir = get_project_dir()
     builtin_tools = (
         list(_TASK_TOOLS)  # always available
         + list(_READ_TOOLS)
         + list(_WRITE_TOOLS)
         + list(_SEARCH_TOOLS)
         + list(_SHELL_TOOLS)  # Windows only; empty elsewhere
+        + list(_SHELL)
     )
     if skills_dir:
         builtin_tools += _SKILL_TOOLS
-    if project_dir:
-        builtin_tools += _PROJECT_TOOLS
     allowed_tools += builtin_tools
     # The subagent launcher is enabled via "Task" but the CLI reports its use as
     # "Agent"; allow that name too so subagents (e.g. the Plan agent) run without
     # a permission prompt in -p mode.
     allowed_tools.append("Agent")
 
-    # In project mode the CLI's cwd is the project, so `python parts/x.py`, git
-    # and the project's own tooling work verbatim, and the session folder comes
-    # along as an extra directory for captures and exports. Otherwise cwd stays
-    # the session folder, exactly as upstream has it.
+    # cwd is always the session folder. The bundled skills are copied there and
+    # the CLI discovers skills from its cwd, so this is what keeps them
+    # reachable -- running in the project instead is what made /help advertise
+    # three skills that could not load.
     #
-    # Known gap: the addon's bundled skills are copied into the session folder,
-    # and the CLI discovers skills from its cwd. So in project mode they load
-    # only if the project has its own .claude/skills.
-    workspace = session_workspace()
-    if project_dir:
-        cwd, extra_dirs = project_dir, [workspace]
-        system = SYSTEM_PROMPT + "\n\n" + PROJECT_PROMPT
-    else:
-        cwd, extra_dirs = workspace, []
-        system = SYSTEM_PROMPT
+    # A document built by a script brings its checkout along as an extra
+    # directory, so the script, its tests and its history are all readable and
+    # writable. The agent is told where it is; it cd's there when it needs to.
+    cwd = session_workspace()
+    extra_dirs = []
+    root = project_root(FreeCAD.ActiveDocument)
+    if root:
+        extra_dirs.append(root)
+    system = SYSTEM_PROMPT + "\n\n" + PROJECT_PROMPT
 
     return {
         "cli_path": cli_path,
         "model": get_model(),
         "effort": get_effort(),
         "system": system,
-        "project_dir": project_dir,
+        "project_dir": root,
         "extra_dirs": extra_dirs,
         "mcp_config": mcp_config,
         "allowed_tools": allowed_tools,

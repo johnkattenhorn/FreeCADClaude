@@ -161,18 +161,36 @@ class ReloadParts(unittest.TestCase):
         self.assertEqual(order[-1], ("deselect", imported),
                          "the objects about to be removed must be deselected")
 
-    def test_precheck_refuses_outside_project_mode(self):
+    def test_precheck_no_longer_refuses_without_a_project(self):
+        """A document becomes a built one the FIRST time something is reloaded
+        into it. Refusing until it already was made that first reload
+        impossible, which is exactly the "make this reproducible" case."""
         real = tools_project._project_dir
         tools_project._project_dir = lambda: None
         try:
-            self.assertIn("project mode only",
-                          tools_project._precheck_reload_parts({"paths": ["x.step"]}))
+            self.assertIsNone(tools_project._precheck_reload_parts({"paths": ["x.step"]}))
         finally:
             tools_project._project_dir = real
 
-    def test_precheck_allows_project_mode(self):
-        with _Project(self.tmp):
-            self.assertIsNone(tools_project._precheck_reload_parts({"paths": ["x.step"]}))
+    def test_an_absolute_path_works_without_a_project(self):
+        step = os.path.join(self.tmp, "out", "part.step")
+        _write_step(step, 20)
+        real = tools_project._project_dir
+        tools_project._project_dir = lambda: None
+        try:
+            out = tools_project._run_reload_parts({"paths": [step]})
+        finally:
+            tools_project._project_dir = real
+        self.assertIn("1 object imported", out)
+
+    def test_a_relative_path_still_needs_somewhere_to_resolve_against(self):
+        real = tools_project._project_dir
+        tools_project._project_dir = lambda: None
+        try:
+            out = tools_project._run_reload_parts({"paths": ["out/part.step"]})
+        finally:
+            tools_project._project_dir = real
+        self.assertIn("nothing to resolve against", out)
 
 
 
@@ -185,29 +203,33 @@ class CapabilityNotice(unittest.TestCase):
     """
 
     def setUp(self):
-        from freecad.freecadclaude import chat_panel
+        from freecad.freecadclaude import agent_config, chat_panel
 
         self.chat_panel = chat_panel
-        from freecad.freecadclaude import agent_config
-
         self.agent_config = agent_config
-        self._real = agent_config.get_project_dir
+        self._real = agent_config.project_root
 
     def tearDown(self):
-        self.agent_config.get_project_dir = self._real
+        self.agent_config.project_root = self._real
 
-    def test_project_mode_names_project_and_shell(self):
-        self.agent_config.get_project_dir = lambda: "/home/john/Code/cad-lab"
+    def test_a_built_drawing_names_its_checkout_and_the_shell(self):
+        self.agent_config.project_root = lambda _doc: "/home/john/Code/cad-lab"
         text = self.chat_panel._capability_notice()
         self.assertIn("/home/john/Code/cad-lab", text)
         self.assertIn("shell", text)
-        self.assertNotIn("add, edit or delete any object", text)
+        self.assertIn("built by a script", text)
 
-    def test_document_mode_is_upstreams_notice_untouched(self):
-        self.agent_config.get_project_dir = lambda: None
+    def test_a_hand_drawn_document_gets_the_ordinary_notice(self):
+        self.agent_config.project_root = lambda _doc: None
         text = self.chat_panel._capability_notice()
         self.assertEqual(text, self.chat_panel._CAPABILITY_NOTICE)
         self.assertIn("add, edit or delete any object", text)
+
+    def test_the_ordinary_notice_still_names_the_shell(self):
+        """It is always on now, and a notice listing what a turn can reach
+        cannot leave out the one tool that reaches anything."""
+        self.agent_config.project_root = lambda _doc: None
+        self.assertIn("shell", self.chat_panel._capability_notice())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -65,11 +65,17 @@ _RELOAD_PARTS_SCHEMA = {
 
 
 def _project_dir():
-    """The configured project, or None. Imported lazily: agent_config imports
-    this package, so a module-level import here would be circular."""
+    """The checkout the open document was built from, or None.
+
+    Detected from the document rather than configured, so it answers for the
+    drawing actually in front of the user. Imported lazily: agent_config
+    imports this package, so a module-level import here would be circular.
+    """
+    import FreeCAD
+
     from .. import agent_config
 
-    return agent_config.get_project_dir()
+    return agent_config.project_root(FreeCAD.ActiveDocument)
 
 
 def _resolve(raw, project):
@@ -247,9 +253,12 @@ def _run_reload_parts(args):
 
 
 def _precheck_reload_parts(args):
-    """Refuse outside project mode, where there is no build to reload."""
-    if _project_dir() is None:
-        return ("reload_parts is project mode only, and no project directory is "
-                "set. In this conversation the document is the source, so there "
-                "is no build output to bring back -- use run_python.")
+    """Nothing to check up front any more.
+
+    This used to refuse unless a ProjectDir preference was set. A document
+    becomes a built one the first time something is reloaded into it, so
+    refusing until it already was made the first reload impossible -- which is
+    exactly the "give me a reproducible script for this" case. Relative paths
+    still need a project to resolve against, and _resolve says so per path.
+    """
     return None
