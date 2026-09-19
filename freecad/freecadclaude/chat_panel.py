@@ -120,6 +120,20 @@ def _capability_notice():
     return _CAPABILITY_NOTICE
 
 
+#: Entry kinds that are part of the conversation rather than panel furniture.
+#: A note is written by the panel itself (the greeting, the capability banner),
+#: so a transcript holding only notes is an empty conversation.
+_CONVERSATION_KINDS = frozenset({"you", "claude", "thinking", "tool", "warning"})
+
+
+def _has_conversation(transcript):
+    """True when anything on screen came from a turn rather than the panel."""
+    try:
+        return any(kind in _CONVERSATION_KINDS for kind, _text in transcript.entries())
+    except Exception:  # noqa: BLE001 - treat unreadable as "something is there"
+        return True
+
+
 def _format_tool_input(inp):
     """Render a tool's input args as a Markdown fragment for its detail entry."""
     if not inp:
@@ -797,6 +811,17 @@ class ChatWidget(QtWidgets.QWidget):
 
         if not self._chat_key:
             return  # unsaved document: nothing stable to file it under
+
+        # Never write an empty panel over a stored conversation. The panel puts
+        # a startup note on screen before it knows which document it is looking
+        # at, and saving that note over eight real messages is how this
+        # destroyed a conversation rather than failing to restore one. Losing
+        # the history is far worse than a stale entry, so when in doubt, keep
+        # what is on disk.
+        if not _has_conversation(self.transcript_view):
+            _stored_session, stored_entries = chat_store.load(self._chat_key)
+            if stored_entries:
+                return
         session = self._worker.session_id if self._worker is not None else None
         try:
             chat_store.save(self._chat_key, session or self._restored_session_id,
@@ -865,7 +890,7 @@ class ChatWidget(QtWidgets.QWidget):
         if self._chat_key is None and key is not None:
             self._chat_key = key
             stored_session, stored_entries = chat_store.load(key)
-            if stored_entries and not self.transcript_view.entries():
+            if stored_entries and not _has_conversation(self.transcript_view):
                 self._load_chat(key)
             else:
                 self._restored_session_id = self._restored_session_id or stored_session

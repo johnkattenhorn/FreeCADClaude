@@ -133,5 +133,75 @@ class KeyTransition(unittest.TestCase):
         self.assertEqual(widget._restored_session_id, "sess-stored")
 
 
+class NeverOverwriteAStoredConversation(unittest.TestCase):
+    """The panel destroyed eight messages by saving over them.
+
+    A startup note goes on screen before the panel knows which document it is
+    looking at. The adopt path asked whether the transcript was empty, the note
+    counted, so it took the save-what-is-on-screen branch and wrote that note
+    over the stored history. Losing a conversation is far worse than keeping a
+    stale one, so an empty panel must never win against what is on disk.
+    """
+
+    def setUp(self):
+        self._doc = getattr(FreeCAD, "ActiveDocument", None)
+        self._load = chat_store.load
+        self.written = []
+
+    def tearDown(self):
+        FreeCAD.ActiveDocument = self._doc
+        chat_store.load = self._load
+
+    def test_a_note_only_transcript_is_not_a_conversation(self):
+        note_only = _Transcript([("note", "Type a message to start a session")])
+        self.assertFalse(chat_panel._has_conversation(note_only))
+
+    def test_one_real_message_makes_it_a_conversation(self):
+        mixed = _Transcript([("note", "banner"), ("you", "why 1.6mm?")])
+        self.assertTrue(chat_panel._has_conversation(mixed))
+
+    def test_adopting_with_only_a_note_on_screen_restores_instead_of_saving(self):
+        chat_store.load = lambda key: ("sess", [("you", "q"), ("claude", "a")])
+        widget = _Widget(key=None, entries=[("note", "Type a message to start")])
+        FreeCAD.ActiveDocument = _Doc("", [_Obj(KEY)])
+        chat_panel.ChatWidget._on_document_activated(widget)
+        self.assertEqual(widget.loaded, [KEY], "must load the stored chat")
+        self.assertEqual(widget.persisted, 0, "and must NOT save over it")
+
+    def test_persist_refuses_to_write_an_empty_panel_over_stored_messages(self):
+        chat_store.load = lambda key: ("sess", [("you", "q"), ("claude", "a")])
+        saved = []
+        real_save = chat_store.save
+        chat_store.save = lambda *a: saved.append(a)
+        try:
+            widget = _RealPersist(key=KEY, entries=[("note", "banner")])
+            chat_panel.ChatWidget._persist_chat(widget)
+        finally:
+            chat_store.save = real_save
+        self.assertEqual(saved, [], "an empty panel must not overwrite history")
+
+    def test_persist_still_writes_a_real_conversation(self):
+        chat_store.load = lambda key: ("sess", [("you", "old")])
+        saved = []
+        real_save = chat_store.save
+        chat_store.save = lambda *a: saved.append(a)
+        try:
+            widget = _RealPersist(key=KEY, entries=[("you", "new"), ("claude", "reply")])
+            chat_panel.ChatWidget._persist_chat(widget)
+        finally:
+            chat_store.save = real_save
+        self.assertEqual(len(saved), 1)
+
+
+class _RealPersist:
+    """A stand-in whose _persist_chat is the real one under test."""
+
+    def __init__(self, key, entries):
+        self._chat_key = key
+        self._restored_session_id = None
+        self._worker = None
+        self.transcript_view = _Transcript(entries)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
