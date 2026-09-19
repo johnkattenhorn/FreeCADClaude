@@ -14,6 +14,7 @@ failing silently, so each of those paths is checked here.
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -57,7 +58,16 @@ class ExportForSlicer(unittest.TestCase):
         self._discover = slicer_runner.discover_binary
         self._export = print_export.oriented_export
         self._open_url = chat_panel.QtGui.QDesktopServices.openUrl
+        self._handles = chat_panel._desktop_handles_3mf
         self.opened = []
+        # Exports land in a throwaway folder, not the user's real session dir:
+        # a test run should not leave files in their conversation history.
+        from freecad.freecadclaude import freecad_tools
+
+        self._freecad_tools = freecad_tools
+        self._session_dir = freecad_tools.session_dir
+        self.tmp = tempfile.mkdtemp()
+        freecad_tools.session_dir = lambda: self.tmp
         print_export.oriented_export = lambda objs, path, **kw: open(path, "w").close()
         slicer_runner.discover_binary = lambda *a, **kw: {
             "path": "/usr/bin/true", "label": "Bambu Studio"}
@@ -66,6 +76,7 @@ class ExportForSlicer(unittest.TestCase):
         self._associate(False)
 
     def _associate(self, handled):
+        chat_panel._desktop_handles_3mf = lambda: handled
         chat_panel.QtGui.QDesktopServices.openUrl = (
             lambda url: self.opened.append(url) or handled)
 
@@ -74,6 +85,8 @@ class ExportForSlicer(unittest.TestCase):
         slicer_runner.discover_binary = self._discover
         print_export.oriented_export = self._export
         chat_panel.QtGui.QDesktopServices.openUrl = self._open_url
+        chat_panel._desktop_handles_3mf = self._handles
+        self._freecad_tools.session_dir = self._session_dir
 
     def _run(self, doc):
         FreeCAD.ActiveDocument = doc
@@ -133,6 +146,33 @@ class ExportForSlicer(unittest.TestCase):
         path, problem = self._run(_Doc([_Obj()]))
         self.assertIsNone(path)
         self.assertIn("Bambu Studio", problem)
+
+
+class DesktopAssociation(unittest.TestCase):
+    """A 3MF is a zip, which is what made this go wrong.
+
+    `xdg-mime query filetype` sniffs the contents and calls a 3MF
+    application/zip, so the "association" it reports is the user's archive
+    manager. openUrl then opens the containing folder and returns success, and
+    the button that trusted it opened a file manager instead of a slicer.
+
+    So the question is asked about the 3MF types BY NAME.
+    """
+
+    def test_it_asks_about_3mf_not_about_zip(self):
+        self.assertIn("model/3mf", chat_panel._3MF_TYPES)
+        self.assertNotIn("application/zip", chat_panel._3MF_TYPES)
+
+    def test_the_vendor_spelling_is_covered_too(self):
+        self.assertTrue(any("3dmanufacturing" in t for t in chat_panel._3MF_TYPES))
+
+    def test_it_does_not_sniff_the_file(self):
+        """Sniffing is the bug. The source must not query filetype."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "freecad", "freecadclaude", "chat_panel.py")
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertNotIn('"filetype"', source)
 
 
 if __name__ == "__main__":

@@ -133,6 +133,40 @@ def _has_conversation(transcript):
         return True
 
 
+#: What a 3MF is called, in both spellings desktops use for it. Asked about by
+#: name rather than sniffed: a 3MF IS a zip, so `xdg-mime query filetype` calls
+#: it application/zip and the "association" that comes back is the user's
+#: archive manager. That is how the button opened a file manager.
+_3MF_TYPES = (
+    "model/3mf",
+    "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+)
+
+
+def _desktop_handles_3mf():
+    """Whether the desktop has a handler registered for 3MF specifically.
+
+    Linux only in practice: elsewhere the shell association is reliable and
+    openUrl reporting success means what it says. Here it does not, since
+    xdg-open shows the containing folder when nothing matches and still
+    reports success.
+    """
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin" or os.name == "nt":
+        return True
+    for kind in _3MF_TYPES:
+        try:
+            found = subprocess.run(["xdg-mime", "query", "default", kind],
+                                   capture_output=True, text=True, timeout=5)
+        except Exception:  # noqa: BLE001 - no xdg-utils; use a slicer instead
+            return False
+        if (found.stdout or "").strip():
+            return True
+    return False
+
+
 def _skill_search_dirs():
     """Where the CLI looks for skills: its working directory, then the user's.
 
@@ -1308,12 +1342,17 @@ class ChatWidget(QtWidgets.QWidget):
         except Exception as exc:  # noqa: BLE001
             return None, f"Could not export the model ({exc!r})."
 
-        # Whatever the desktop opens .3mf with, FIRST. Bambu Studio is what
-        # this addon knows how to drive for an actual slice, but someone whose
-        # default is OrcaSlicer or PrusaSlicer means it, and a button that
-        # ignores that is a button that fights the user.
-        if QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path)):
-            return path, None
+        # Whatever the desktop opens .3mf with, FIRST. Someone whose default is
+        # OrcaSlicer or PrusaSlicer means it, and a button that ignores that is
+        # a button that fights the user.
+        #
+        # But only when there IS an association. QDesktopServices.openUrl
+        # reports success when xdg-open falls back to showing the containing
+        # FOLDER, so trusting its return value opens a file manager and calls
+        # it done.
+        if _desktop_handles_3mf():
+            if QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path)):
+                return path, None
 
         # Nothing associated: fall back to a slicer we can find ourselves.
         # discover_binary returns a dict describing it, not a path.
