@@ -56,15 +56,24 @@ class ExportForSlicer(unittest.TestCase):
         self._doc = getattr(FreeCAD, "ActiveDocument", None)
         self._discover = slicer_runner.discover_binary
         self._export = print_export.oriented_export
-        self.launched = []
+        self._open_url = chat_panel.QtGui.QDesktopServices.openUrl
+        self.opened = []
         print_export.oriented_export = lambda objs, path, **kw: open(path, "w").close()
         slicer_runner.discover_binary = lambda *a, **kw: {
             "path": "/usr/bin/true", "label": "Bambu Studio"}
+        # No desktop association by default, so the fallback is what gets
+        # exercised unless a test says otherwise.
+        self._associate(False)
+
+    def _associate(self, handled):
+        chat_panel.QtGui.QDesktopServices.openUrl = (
+            lambda url: self.opened.append(url) or handled)
 
     def tearDown(self):
         FreeCAD.ActiveDocument = self._doc
         slicer_runner.discover_binary = self._discover
         print_export.oriented_export = self._export
+        chat_panel.QtGui.QDesktopServices.openUrl = self._open_url
 
     def _run(self, doc):
         FreeCAD.ActiveDocument = doc
@@ -87,11 +96,27 @@ class ExportForSlicer(unittest.TestCase):
         self.assertIsNone(path)
         self.assertIn("nothing visible", problem)
 
-    def test_no_slicer_installed_falls_back(self):
+    def test_the_desktop_association_is_tried_first(self):
+        """Someone whose default .3mf handler is OrcaSlicer means it. A button
+        that ignores the association is a button that fights the user."""
+        self._associate(True)
+        called = []
+        slicer_runner.discover_binary = lambda *a, **kw: called.append(1) or None
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(problem)
+        self.assertEqual(len(self.opened), 1, "should have opened the file")
+        self.assertEqual(called, [], "must not go looking for a slicer itself")
+
+    def test_no_association_and_no_slicer_falls_back(self):
         slicer_runner.discover_binary = lambda *a, **kw: None
         path, problem = self._run(_Doc([_Obj()]))
         self.assertIsNone(path)
-        self.assertIn("No slicer", problem)
+        self.assertIn("no slicer was found", problem)
+
+    def test_no_association_uses_a_slicer_it_can_find(self):
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(problem)
+        self.assertTrue(path.endswith(".3mf"))
 
     def test_a_failed_export_falls_back_rather_than_raising(self):
         def _boom(*_a, **_kw):

@@ -1282,6 +1282,10 @@ class ChatWidget(QtWidgets.QWidget):
 
         Oriented the way each part prints, using the same build directions a
         slice would, so what opens is arranged rather than lying on its side.
+
+        Opened with whatever the desktop associates with .3mf, so someone whose
+        default is OrcaSlicer or PrusaSlicer gets that. Only when nothing is
+        associated does it look for a slicer itself.
         """
         import subprocess
 
@@ -1300,13 +1304,6 @@ class ChatWidget(QtWidgets.QWidget):
         if not objs:
             return None, "There is nothing visible to send."
 
-        # discover_binary returns a dict describing the slicer, not a path.
-        found = slicer_runner.discover_binary()
-        binary = (found or {}).get("path")
-        label = (found or {}).get("label") or "the slicer"
-        if not binary:
-            return None, "No slicer was found on this machine."
-
         name = (getattr(doc, "Name", None) or "model") + ".3mf"
         path = os.path.join(freecad_tools.session_dir(), name)
         try:
@@ -1314,9 +1311,24 @@ class ChatWidget(QtWidgets.QWidget):
         except Exception as exc:  # noqa: BLE001
             return None, f"Could not export the model ({exc!r})."
 
+        # Whatever the desktop opens .3mf with, FIRST. Bambu Studio is what
+        # this addon knows how to drive for an actual slice, but someone whose
+        # default is OrcaSlicer or PrusaSlicer means it, and a button that
+        # ignores that is a button that fights the user.
+        if QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path)):
+            return path, None
+
+        # Nothing associated: fall back to a slicer we can find ourselves.
+        # discover_binary returns a dict describing it, not a path.
+        found = slicer_runner.discover_binary()
+        binary = (found or {}).get("path")
+        label = (found or {}).get("label") or "the slicer"
+        if not binary:
+            return None, "Nothing is associated with .3mf and no slicer was found."
+
         try:
-            # Detached: the slicer outlives this call, and a slicer that dies
-            # with FreeCAD would be worse than useless.
+            # Detached: the slicer outlives this call, and one that dies with
+            # FreeCAD would be worse than useless.
             subprocess.Popen([binary, path], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as exc:  # noqa: BLE001
