@@ -133,18 +133,19 @@ def _has_conversation(transcript):
         return True
 
 
-#: What a 3MF is called, in both spellings desktops use for it. Asked about by
+#: What these formats are called, in every spelling desktops use. Asked about by
 #: name rather than sniffed: a 3MF IS a zip, so `xdg-mime query filetype` calls
-#: it application/zip and the "association" that comes back is the user's
-#: archive manager. That is how the button opened a file manager.
-_3MF_TYPES = (
-    "model/3mf",
-    "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-)
+#: one application/zip and the "association" that comes back is the user's
+#: archive manager. That is how this once opened a file manager.
+_MIME_TYPES = {
+    ".3mf": ("model/3mf",
+             "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"),
+    ".stl": ("model/stl", "application/sla", "model/x.stl-binary"),
+}
 
 
-def _desktop_handles_3mf():
-    """Whether the desktop has a handler registered for 3MF specifically.
+def _desktop_handles(suffix):
+    """Whether the desktop has a handler registered for this format.
 
     Linux only in practice: elsewhere the shell association is reliable and
     openUrl reporting success means what it says. Here it does not, since
@@ -156,7 +157,7 @@ def _desktop_handles_3mf():
 
     if sys.platform == "darwin" or os.name == "nt":
         return True
-    for kind in _3MF_TYPES:
+    for kind in _MIME_TYPES.get(suffix, ()):
         try:
             found = subprocess.run(["xdg-mime", "query", "default", kind],
                                    capture_output=True, text=True, timeout=5)
@@ -1335,7 +1336,19 @@ class ChatWidget(QtWidgets.QWidget):
         if not objs:
             return None, "There is nothing visible to send."
 
-        name = (getattr(doc, "Name", None) or "model") + ".3mf"
+        # STL for one part, 3MF for several.
+        #
+        # A 3MF can carry a print PROJECT as well as geometry, and FreeCAD
+        # writes only the geometry, so Bambu Studio says "invalid config, load
+        # geometry data only" every time. True, and useless noise for a file
+        # whose whole job is to be looked at. An STL is expected to be geometry
+        # alone, so nothing complains.
+        #
+        # It costs object separation, which is why more than one part still
+        # goes as 3MF: a plate arriving as a single merged mesh cannot be
+        # arranged, and that is worse than a dialog.
+        suffix = ".stl" if len(objs) == 1 else ".3mf"
+        name = (getattr(doc, "Name", None) or "model") + suffix
         path = os.path.join(freecad_tools.session_dir(), name)
         try:
             print_export.oriented_export(objs, path)
@@ -1350,7 +1363,7 @@ class ChatWidget(QtWidgets.QWidget):
         # reports success when xdg-open falls back to showing the containing
         # FOLDER, so trusting its return value opens a file manager and calls
         # it done.
-        if _desktop_handles_3mf():
+        if _desktop_handles(suffix):
             if QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path)):
                 return path, None
 
