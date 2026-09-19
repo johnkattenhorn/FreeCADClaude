@@ -18,9 +18,18 @@ DEFAULT_MODEL = "claude-opus-5"
 
 #: (label, model-id) pairs offered by the chat panel's model selector. The label
 #: is what the user sees in the dropdown; the id is passed to the CLI's --model.
+#:
+#: Ordered most capable first. Fable 5.1 is the most capable widely released
+#: model and costs about twice Opus per token, so it is offered rather than
+#: made the default. Haiku is here for the cheap end: reading a document,
+#: listing objects, a quick measurement.
+#:
+#: Exact ids, never with a date suffix appended.
 MODELS = (
+    ("Fable", "claude-fable-5-1"),
     ("Opus", "claude-opus-5"),
     ("Sonnet", "claude-sonnet-5"),
+    ("Haiku", "claude-haiku-4-5"),
 )
 _VALID_MODELS = {mid for _, mid in MODELS}
 

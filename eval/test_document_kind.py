@@ -95,5 +95,32 @@ class ShellIsAlwaysOn(unittest.TestCase):
         self.assertIn("FreeCADClaude", config["cwd"])
 
 
+class ModelPicker(unittest.TestCase):
+    """The dropdown's ids go straight to the CLI's --model."""
+
+    def test_the_default_is_offered(self):
+        self.assertIn(agent_config.DEFAULT_MODEL,
+                      [mid for _label, mid in agent_config.MODELS])
+
+    def test_no_id_carries_a_date_suffix(self):
+        """Model ids are complete as they stand. A remembered date suffix is a
+        different string and the CLI will not know it."""
+        import re
+
+        for _label, mid in agent_config.MODELS:
+            self.assertIsNone(re.search(r"-\d{8}$", mid), mid)
+
+    def test_labels_and_ids_are_unique(self):
+        labels = [label for label, _ in agent_config.MODELS]
+        ids = [mid for _, mid in agent_config.MODELS]
+        self.assertEqual(len(labels), len(set(labels)))
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_an_unknown_id_falls_back_to_the_default(self):
+        """A model dropped from the list must not leave a stored preference
+        pointing at something the CLI will reject."""
+        self.assertNotIn("claude-made-up-9", agent_config._VALID_MODELS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
