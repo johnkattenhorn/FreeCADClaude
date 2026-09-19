@@ -129,6 +129,38 @@ class ReloadParts(unittest.TestCase):
             out = tools_project._run_reload_parts({"paths": ["out/notes.txt"]})
         self.assertIn("not an importable geometry file", out)
 
+    def test_deselect_is_harmless_without_a_gui(self):
+        """The eval suite runs console FreeCAD, where FreeCADGui does not
+        import. Deselecting must be a no-op there, not an exception that takes
+        the reload with it."""
+        step = os.path.join(self.tmp, "out", "part.step")
+        _write_step(step, 20)
+        with _Project(self.tmp):
+            tools_project._drop_selection(self.doc, list(self.doc.Objects))
+            out = tools_project._run_reload_parts({"paths": ["out/part.step"]})
+        self.assertIn("1 object imported", out)
+
+    def test_removal_goes_through_the_deselect_path(self):
+        """The reload must deselect BEFORE removing, or Gui selection is left
+        holding a reference to a deleted object -- which does not raise, it
+        segfaults later from inside C++."""
+        step = os.path.join(self.tmp, "out", "part.step")
+        _write_step(step, 20)
+        order = []
+        real = tools_project._drop_selection
+        tools_project._drop_selection = lambda doc, objs: order.append(
+            ("deselect", [o.Name for o in objs]))
+        try:
+            with _Project(self.tmp):
+                tools_project._run_reload_parts({"paths": ["out/part.step"]})
+                imported = [o.Name for o in self.doc.Objects]
+                _write_step(step, 40)
+                tools_project._run_reload_parts({"paths": ["out/part.step"]})
+        finally:
+            tools_project._drop_selection = real
+        self.assertEqual(order[-1], ("deselect", imported),
+                         "the objects about to be removed must be deselected")
+
     def test_precheck_refuses_outside_project_mode(self):
         real = tools_project._project_dir
         tools_project._project_dir = lambda: None

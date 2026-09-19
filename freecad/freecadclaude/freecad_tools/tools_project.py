@@ -104,6 +104,37 @@ def _previous(doc, path):
     return [o for o in doc.Objects if getattr(o, _SOURCE_PROP, None) == path]
 
 
+def _drop_selection(doc, objs):
+    """Deselect `objs` before they are removed.
+
+    A reload replaces the very geometry the user is most likely to have clicked
+    on -- "change this face" ends with that face's object being deleted. Gui
+    selection is not a document property and is not cleaned up by removeObject,
+    so it is left holding a reference to an object that has gone. Nothing
+    complains at the time; the next thing to walk the selection does, from
+    inside C++, as a segfault with no Python traceback.
+
+    Scoped to the objects actually going, so a selection elsewhere in the
+    document survives a reload.
+    """
+    if not objs:
+        return
+    try:
+        import FreeCADGui
+    except ImportError:  # console FreeCAD (the eval suite): no selection to hold
+        return
+    names = {o.Name for o in objs}
+    try:
+        for sel in list(FreeCADGui.Selection.getSelectionEx(doc.Name)):
+            if getattr(sel, "ObjectName", None) in names:
+                FreeCADGui.Selection.removeSelection(doc.Name, sel.ObjectName)
+    except Exception:  # noqa: BLE001 - clearing the lot beats leaving it dangling
+        try:
+            FreeCADGui.Selection.clearSelection(doc.Name)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _measure(objs):
     """Bounding box and volume across the imported objects, or None if shapeless."""
     shapes = [o.Shape for o in objs if getattr(o, "Shape", None) and not o.Shape.isNull()]
@@ -173,6 +204,7 @@ def _run_reload_parts(args):
             continue
 
         stale = _previous(doc, path)
+        _drop_selection(doc, stale)
         for obj in stale:
             try:
                 doc.removeObject(obj.Name)

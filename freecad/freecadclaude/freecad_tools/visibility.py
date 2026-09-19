@@ -177,6 +177,16 @@ def _restore_selection(saved):
     import FreeCADGui
 
     for sel in saved:
+        # An object removed between the suspend and the restore leaves a
+        # SelectionObject pointing at nothing. Re-adding it hands FreeCAD a
+        # dangling reference, which does not raise here -- it crashes later,
+        # somewhere else.
+        try:
+            if getattr(sel, "Object", None) is None:
+                continue
+            sel.Object.Name  # touching a removed object raises rather than crashing
+        except Exception:  # noqa: BLE001
+            continue
         try:
             subs = list(getattr(sel, "SubElementNames", None) or [])
             if subs:
