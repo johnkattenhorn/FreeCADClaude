@@ -171,6 +171,37 @@ def get_skills_dir():
     return None
 
 
+#: The tools that render a picture for the agent to look at. Every one of them
+#: goes through render._offscreen_shot.
+#:
+#: They are the AGENT's eyes, not the user's -- the user is already looking at
+#: the screen. When the work is "change this face", measuring it with
+#: run_python and acting on it is the whole job, and a screenshot is a round
+#: trip that tells the user nothing they cannot see.
+#:
+#: capture_user_view is deliberately NOT in here: it grabs the view the user is
+#: already looking at, which is what "look at this" means, and it renders
+#: nothing of its own.
+_SCREENSHOT_TOOLS = (
+    "capture_view",
+    "cutaway",
+    "crop_view",
+    "view_model_3d",
+    "read_model_markup",
+)
+
+
+def screenshots_enabled():
+    """Whether the agent may render pictures for itself.
+
+    On by default, as upstream has it. Set the "Screenshots" preference to
+    false for a panel that works numerically -- describe_objects, get_sketch,
+    get_selection and run_python measurements -- and leaves looking to the
+    person with the window open.
+    """
+    return FreeCAD.ParamGet(PARAM_PATH).GetBool("Screenshots", True)
+
+
 def get_project_dir():
     """The code-CAD project this conversation works in, or None.
 
@@ -234,7 +265,10 @@ def build_config(cli_path, bridge_port, bridge_token):
             }
         }
     )
-    allowed_tools = ["mcp__freecad__" + name for name in freecad_tools.TOOLS]
+    tool_names = list(freecad_tools.TOOLS)
+    if not screenshots_enabled():
+        tool_names = [n for n in tool_names if n not in _SCREENSHOT_TOOLS]
+    allowed_tools = ["mcp__freecad__" + name for name in tool_names]
 
     skills_dir = get_skills_dir()
     project_dir = get_project_dir()

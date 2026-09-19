@@ -201,5 +201,13 @@ TOOLS = {
 
 
 def list_schemas():
-    """Return the MCP tool schemas for tools/list."""
-    return [entry["schema"] for entry in TOOLS.values()]
+    """Return the MCP tool schemas for tools/list.
+
+    Filtered by the Screenshots preference. Hiding a tool the allowlist would
+    refuse anyway matters: an agent that can see a tool will reach for it, and
+    in -p mode a refused call is a dead turn rather than a prompt.
+    """
+    from .. import agent_config  # lazy: agent_config imports this package
+
+    hidden = () if agent_config.screenshots_enabled() else agent_config._SCREENSHOT_TOOLS
+    return [entry["schema"] for name, entry in TOOLS.items() if name not in hidden]

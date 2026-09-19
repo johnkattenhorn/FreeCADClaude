@@ -107,19 +107,6 @@ _STYLE_SCHEMA_PROPS = {
 }
 
 
-def _mdi_subwindows():
-    """The main window's current set of MDI subwindows (one per open document
-    view/tab) -- diffed before/after creating a view to spot which subwindow
-    it landed in, since FreeCAD's own Python view objects don't expose
-    hide/show/close (those are plain Qt widget operations)."""
-    from PySide import QtWidgets
-
-    import FreeCADGui
-
-    mdi_area = FreeCADGui.getMainWindow().findChild(QtWidgets.QMdiArea)
-    return set(mdi_area.subWindowList()) if mdi_area else set()
-
-
 def _force_draw_style(view, style=_DEFAULT_STYLE):
     """Force how `view` draws, overriding each object's own DisplayMode and
     whatever draw style the user's real view currently happens to be set to --
@@ -144,28 +131,30 @@ def _force_draw_style(view, style=_DEFAULT_STYLE):
 
 
 def _offscreen_view(doc):
-    """A throwaway 3D view of `doc`, for capture_view to render through
-    instead of whatever view/tab the user actually has open -- so a
-    screenshot never hijacks their camera, and never fails just because a
-    non-3D tab (e.g. a Spreadsheet) or a different document happens to be
-    focused. Returns (view, subwindow, prev_view); view/subwindow may be
-    None on failure.
+    """The view a capture renders through: the user's own, borrowed.
 
-    Gui::Document::createView() unconditionally shows and activates the new
-    view (it exists for the "split view" feature, not headless use), so it
-    briefly becomes the active tab while the capture runs. That's fine to let
-    happen -- the whole tool call is one blocked GUI-thread event, so Qt never
-    gets a turn to paint it anyway. An earlier version tried to hide the
-    subwindow and restore focus immediately, before the capture even ran; that
-    extra churn (deactivating/hiding a window Qt still considered "active")
-    was what confused QMdiArea's own activation-history bookkeeping and left
-    the user's tabbed layout scrambled after close() -- e.g. the Start tab or
-    the document reappearing untabbed. Letting the new view become active
-    normally, then closing it and reasserting `prev_view` exactly once (see
-    _close_offscreen_view), is the sequence Qt's bookkeeping handles cleanly.
+    It used to create a throwaway Gui::View3DInventor per call and destroy it
+    afterwards, so a screenshot never touched the user's camera. That is the
+    nicer design and it is why upstream wrote it that way. It also segfaults:
 
-    prev_view is handed back to the caller so _close_offscreen_view can
-    reactivate it once the throwaway subwindow is actually closed.
+        SIGSEGV
+        #1  _Py_Dealloc
+        #2  Gui::View3DInventorViewer::~View3DInventorViewer()
+
+    Five times on 2026-09-19, every one of them on the call that destroys the
+    throwaway view -- after a cutaway twice, a capture_view three times. Four
+    attempts to make the teardown safe failed, and the one that kept the view
+    alive instead left a second document tab and a modal save prompt. The
+    remaining option is not to create one.
+
+    So captures borrow the active 3D view. The camera is handed back to
+    _close_offscreen_view and put back exactly as it was, which is what makes
+    this invisible rather than merely survivable -- everything else a capture
+    changes (visibility, appearance, selection) was already saved and restored
+    around it.
+
+    Returns (view, camera, prev_view) -- `camera` in the slot that used to
+    carry the throwaway view's window, since there is no window to close now.
     """
     import FreeCADGui
 
@@ -173,49 +162,43 @@ def _offscreen_view(doc):
     if gui_doc is None:
         return None, None, None
 
-    prev_view = FreeCADGui.activeView()
-
-    before = _mdi_subwindows()
-    view = gui_doc.createView("Gui::View3DInventor")
+    view = FreeCADGui.activeView()
+    if view is None or not hasattr(view, "saveImage"):
+        # The active tab is a spreadsheet, a TechDraw page, the Start page...
+        # Look for any 3D view of this document before giving up.
+        view = next((v for v in (gui_doc.mdiViewsOfType("Gui::View3DInventor") or ())
+                     if hasattr(v, "saveImage")), None)
     if view is None:
-        return None, None, prev_view
+        return None, None, None
 
-    # viewTop()/viewIsometric()/fitAll() etc. animate the camera over several
-    # QTimer ticks by default and return before the animation finishes; since
-    # the event loop never turns during this call, disable animation so those
-    # calls apply immediately/synchronously instead of capturing mid-transition.
-    view.setAnimationEnabled(False)
+    try:
+        camera = view.getCamera()
+    except Exception:  # noqa: BLE001 - nothing to restore, but still usable
+        camera = None
+
+    # viewTop()/fitAll() animate over several QTimer ticks by default and
+    # return before the animation finishes; the event loop never turns during
+    # a tool call, so disable animation to make them apply immediately.
+    try:
+        view.setAnimationEnabled(False)
+    except Exception:  # noqa: BLE001
+        pass
     _force_draw_style(view)
-
-    subwindow = next(iter(_mdi_subwindows() - before), None)
-    return view, subwindow, prev_view
+    return view, camera, view
 
 
-def _close_offscreen_view(subwindow, prev_view=None):
-    """Tear down the throwaway view and hand focus back to whatever the user
-    actually had open. Closing a QMdiSubWindow makes Qt re-pick an active
-    subwindow via its own activation-history bookkeeping; reasserting
-    `prev_view` afterwards makes sure that pick is the user's real previous
-    view, not whatever QMdiArea happened to land on.
+def _close_offscreen_view(camera, prev_view=None):
+    """Put the borrowed view's camera back exactly as it was.
 
-    The subwindow is closed and destroyed, as it always was. An earlier
-    attempt to keep and reuse it -- on the theory that the destructor was the
-    crash -- was wrong twice over: the real cause was the selection being held
-    across clearSelection (see visibility._suspend_selection), and FreeCAD
-    treats every View3DInventor as a document view, so one that is never
-    destroyed leaves a second tab in the tab bar and a save prompt behind it.
+    Nothing is closed or destroyed any more -- see _offscreen_view. The whole
+    tool call is one blocked GUI-thread event, so the view never repaints
+    between the capture moving the camera and this putting it back, and the
+    user sees no flicker.
     """
-    if subwindow is not None:
+    if camera is not None and prev_view is not None:
         try:
-            subwindow.close()  # WA_DeleteOnClose -- also destroys the inner view
-        except Exception:  # noqa: BLE001
-            pass
-    if prev_view is not None:
-        try:
-            import FreeCADGui
-
-            FreeCADGui.getMainWindow().setActiveWindow(prev_view)
-        except Exception:  # noqa: BLE001
+            prev_view.setCamera(camera)
+        except Exception:  # noqa: BLE001 - view gone; nothing to restore it to
             pass
 
 
@@ -344,7 +327,7 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
     """
     import FreeCADGui
 
-    view, subwindow, prev_view = _offscreen_view(doc)
+    view, camera, prev_view = _offscreen_view(doc)
     if view is None:
         yield None
         return
@@ -356,8 +339,8 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
     try:
         saved = _isolate_visibility(doc, keep_names)
         saved_sel = _suspend_selection(doc)  # drop selection highlight for the shot
-        if subwindow is not None:
-            subwindow.resize(width, height)
+        # No resize: the view is the user's, and saveImage takes the pixel
+        # size it is asked for regardless of the widget's own.
         # Per-view override: no document mutation, and it dies with the view.
         _force_draw_style(view, style)
         with _shot_appearance(doc, keep_names, style):
@@ -370,7 +353,7 @@ def _offscreen_shot(doc, keep_names, width, height, style=_DEFAULT_STYLE):
                 gui_doc.Modified = prev_modified
             except Exception:  # noqa: BLE001
                 pass
-        _close_offscreen_view(subwindow, prev_view)
+        _close_offscreen_view(camera, prev_view)
 
 
 def _camera_basis(cam):
