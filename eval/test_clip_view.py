@@ -3,15 +3,17 @@
 
     PYTHONPATH=/usr/lib/freecad/lib python3 eval/test_clip_view.py
 
-The node's lifetime is the thing to get right. A Python-owned Coin node left in
-a live scene graph and then garbage collected is a use-after-free, and the
-segfault that follows names no clip plane anywhere in it -- which is exactly
-how five crashes on 2026-09-19 stayed unexplained for so long. So the plane is
-ref'd on the way in, held while it is in the graph, and removed and unref'd
-together.
+The first version pushed an SoClipPlane into the scene graph by hand. That was
+wrong twice over: it left a Python-owned Coin node in a live graph, and it
+fought with the plane View -> Clipping View manages, so the dialog's checkboxes
+would not tick while a clip from the panel was in place.
 
-A real scene graph needs a GUI. These drive the lifetime with stand-ins, which
-is the part that can be checked without one.
+It drives FreeCAD's own View3DInventorPy.toggleClippingPlane now, so there is
+one plane and the dialog and the panel agree about it.
+
+A real view needs a GUI. These use a stand-in to check the decisions: clear an
+existing plane before setting a new one, ask for a manipulator only when
+requested, and turn a plane into the placement FreeCAD wants.
 """
 
 import os
@@ -21,92 +23,104 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+import FreeCAD  # noqa: E402
+
 from freecad.freecadclaude.freecad_tools import tools_clip  # noqa: E402
 
 
-class _Clip:
-    def __init__(self):
-        self.refs = 0
+class _StubView:
+    """Records what clip_view asks of the viewer."""
 
-    def ref(self):
-        self.refs += 1
+    def __init__(self, has=False, direction=(0, 1, 0)):
+        self.has = has
+        self.calls = []
+        self._dir = direction
 
-    def unref(self):
-        self.refs -= 1
+    def toggleClippingPlane(self, *args):
+        self.calls.append(args)
+        self.has = bool(args[0]) if args else not self.has
+
+    def hasClippingPlane(self):
+        return self.has
+
+    def getViewDirection(self):
+        class _D:
+            pass
+
+        d = _D()
+        d.x, d.y, d.z = self._dir
+        return d
 
 
-class _Parent:
-    def __init__(self):
-        self.removed = []
-
-    def removeChild(self, node):
-        self.removed.append(node)
+class _Doc:
+    Name = "TheDoc"
 
 
-class ClipLifetime(unittest.TestCase):
+class ClipViaFreeCADsOwnPlane(unittest.TestCase):
     def setUp(self):
-        tools_clip._ACTIVE.clear()
+        self._view = tools_clip._active_view
+        self._doc = FreeCAD.ActiveDocument if hasattr(FreeCAD, "ActiveDocument") else None
+        self._resolve = tools_clip._resolve_clip_plane
+        self._face = tools_clip._face_the_cut
+        self._place = tools_clip._placement_for
+        tools_clip._face_the_cut = lambda v, n: False
+        tools_clip._placement_for = lambda p: "PLACEMENT"
+        tools_clip._resolve_clip_plane = lambda a, d: ("PLANE", "x = 0 mm", (1, 0, 0), None)
 
     def tearDown(self):
-        tools_clip._ACTIVE.clear()
+        tools_clip._active_view = self._view
+        tools_clip._resolve_clip_plane = self._resolve
+        tools_clip._face_the_cut = self._face
+        tools_clip._placement_for = self._place
 
-    def test_remove_detaches_and_releases_together(self):
-        clip, parent = _Clip(), _Parent()
-        clip.ref()
-        tools_clip._ACTIVE["Doc"] = (clip, parent)
-
-        self.assertTrue(tools_clip._remove("Doc"))
-        self.assertEqual(parent.removed, [clip], "must come out of the graph")
-        self.assertEqual(clip.refs, 0, "and the reference must be given up")
-        self.assertNotIn("Doc", tools_clip._ACTIVE)
-
-    def test_remove_is_idempotent(self):
-        self.assertFalse(tools_clip._remove("Doc"))
-        clip, parent = _Clip(), _Parent()
-        tools_clip._ACTIVE["Doc"] = (clip, parent)
-        self.assertTrue(tools_clip._remove("Doc"))
-        self.assertFalse(tools_clip._remove("Doc"), "second removal is a no-op")
-
-    def test_a_detach_that_fails_still_releases(self):
-        """The view can be gone already -- closing the document does it. The
-        entry must still be dropped, or the next clip stacks on a dead one."""
-        class _DeadParent:
-            def removeChild(self, _node):
-                raise RuntimeError("wrapped C/C++ object has been deleted")
-
-        clip = _Clip()
-        clip.ref()
-        tools_clip._ACTIVE["Doc"] = (clip, _DeadParent())
-        self.assertTrue(tools_clip._remove("Doc"))
-        self.assertEqual(clip.refs, 0)
-        self.assertNotIn("Doc", tools_clip._ACTIVE)
-
-    def test_planes_are_tracked_per_document(self):
-        a, b = (_Clip(), _Parent()), (_Clip(), _Parent())
-        tools_clip._ACTIVE["A"] = a
-        tools_clip._ACTIVE["B"] = b
-        tools_clip._remove("A")
-        self.assertNotIn("A", tools_clip._ACTIVE)
-        self.assertIn("B", tools_clip._ACTIVE, "one document must not clear another")
-
-
-class OffWithNoDocument(unittest.TestCase):
-    def test_off_without_a_document_says_so(self):
-        module = types.ModuleType("FreeCAD")
-        module.ActiveDocument = None
-        saved = sys.modules.get("FreeCAD")
-        sys.modules["FreeCAD"] = module
+    def _run(self, view, args):
+        tools_clip._active_view = lambda: view
+        FreeCAD.ActiveDocument = _Doc()
         try:
-            import importlib
-
-            importlib.reload(tools_clip)
-            self.assertIn("No active document", tools_clip._run_clip_view({"off": True}))
+            return tools_clip._run_clip_view(args)
         finally:
-            if saved is not None:
-                sys.modules["FreeCAD"] = saved
-            import importlib
+            FreeCAD.ActiveDocument = self._doc
 
-            importlib.reload(tools_clip)
+    def test_it_uses_freecads_own_plane(self):
+        """Not a hand-inserted SoClipPlane. One plane, shared with the dialog."""
+        view = _StubView()
+        self._run(view, {"axis": "x"})
+        self.assertEqual(view.calls, [(1, False, True, "PLACEMENT")])
+
+    def test_an_existing_plane_is_cleared_first(self):
+        """Toggling on over an existing plane leaves the old placement in force
+        and silently ignores the new one."""
+        view = _StubView(has=True)
+        self._run(view, {"axis": "x"})
+        self.assertEqual(view.calls[0], (0,), "must turn the old one off first")
+        self.assertEqual(view.calls[1][0], 1)
+
+    def test_handle_asks_for_a_manipulator(self):
+        view = _StubView()
+        self._run(view, {"axis": "x", "handle": True})
+        self.assertIs(view.calls[0][2], False, "noManip false means show the handle")
+
+    def test_no_handle_by_default(self):
+        view = _StubView()
+        self._run(view, {"axis": "x"})
+        self.assertIs(view.calls[0][2], True)
+
+    def test_off_removes_it(self):
+        view = _StubView(has=True)
+        out = self._run(view, {"off": True})
+        self.assertEqual(view.calls, [(0,)])
+        self.assertIn("removed", out)
+
+    def test_off_with_nothing_set_says_so(self):
+        view = _StubView(has=False)
+        out = self._run(view, {"off": True})
+        self.assertEqual(view.calls, [])
+        self.assertIn("no clip plane", out)
+
+    def test_it_points_at_the_dialog(self):
+        """The user needs to know where else this plane lives."""
+        out = self._run(_StubView(), {"axis": "x"})
+        self.assertIn("Clipping View", out)
 
 
 class _Dir:
