@@ -213,9 +213,9 @@ class CapabilityNotice(unittest.TestCase):
         self.agent_config.project_root = self._real
 
     def test_a_built_drawing_names_its_checkout_and_the_shell(self):
-        self.agent_config.project_root = lambda _doc: "/home/john/Code/cad-lab"
+        self.agent_config.project_root = lambda _doc: "/projects/cad-lab"
         text = self.chat_panel._capability_notice()
-        self.assertIn("/home/john/Code/cad-lab", text)
+        self.assertIn("/projects/cad-lab", text)
         self.assertIn("shell", text)
         self.assertIn("built by a script", text)
 
