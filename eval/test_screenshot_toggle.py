@@ -25,12 +25,21 @@ from freecad.freecadclaude import agent_config, freecad_tools  # noqa: E402
 
 
 class ScreenshotToggle(unittest.TestCase):
+    #: The suite must not write to the user's real FreeCAD preferences. It did,
+    #: and restoring "Screenshots" to its default on the way out silently undid
+    #: a setting that had been made deliberately minutes earlier. Tests get
+    #: their own group; only the reader is pointed at it.
+    GROUP = freecad_tools.PARAM_PATH + "/EvalScratch"
+
     def setUp(self):
-        self.params = FreeCAD.ParamGet(freecad_tools.PARAM_PATH)
-        self.previous = self.params.GetBool("Screenshots", True)
+        self.params = FreeCAD.ParamGet(self.GROUP)
+        self._real = agent_config.screenshots_enabled
+        agent_config.screenshots_enabled = lambda: self.params.GetBool(
+            "Screenshots", True)
 
     def tearDown(self):
-        self.params.SetBool("Screenshots", self.previous)
+        agent_config.screenshots_enabled = self._real
+        self.params.SetBool("Screenshots", True)
 
     def _names(self):
         return {s["name"] for s in freecad_tools.list_schemas()}

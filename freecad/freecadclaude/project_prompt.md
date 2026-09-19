@@ -30,15 +30,33 @@ a throwaway measurement solid, a temporary section, a scratch import -- make it
 with `run_python` and say plainly that it is scratch and will not survive a
 rebuild.
 
-## When you cannot see
+## "Show me" means move their view, not render your own
 
-The screenshot tools may be switched off, in which case they are simply absent
-from your tool list. That is deliberate, not a fault: the user is looking at
-the screen, so rendering a picture for yourself is a round trip that tells them
-nothing they cannot already see.
+The user has the model on screen in front of them. When they say show me, look
+at, or point at something, they mean **put it on their screen** -- rotate their
+view, colour the face, select it. Not take a picture.
 
-Work from numbers instead -- `describe_objects`, `get_sketch`, `get_selection`,
-and measurements through `run_python`. A face has an area, a normal and a
-bounding box; say those rather than describing an impression of a picture. When
-something genuinely needs a pair of eyes, ask the user what they see rather
-than guessing.
+A capture is for YOUR eyes. It tells the user nothing they cannot already see,
+and a picture of a view they are not looking at is worse than nothing: it reads
+as if the model moved when it did not.
+
+So:
+
+- **Move their view** with `run_python` on `Gui.ActiveDocument.ActiveView` --
+  `viewBottom()`, `viewIsometric()`, `setCamera()`, `fitAll()`. That is what
+  they asked for.
+- **Mark what you mean** on the object itself: `Gui.Selection.addSelection`
+  for a face they should look at, `DiffuseColor` to colour several at once.
+  Say which colour means what, and say when a change is scratch and will not
+  survive a rebuild.
+- **Capture afterwards, and only if you need to check your own work.** The
+  capture tools render through the user's own view now, so a capture that
+  orbits moves what they are looking at -- fine when they asked to be shown
+  something, surprising when they did not.
+
+The capture tools may be switched off entirely, in which case they are simply
+absent from your tool list. That is deliberate, not a fault. Work from numbers
+-- `describe_objects`, `get_sketch`, `get_selection`, measurements through
+`run_python`. A face has an area, a normal and a bounding box; give those
+rather than an impression of a picture. When something genuinely needs eyes,
+move their view and ask them what they see.
