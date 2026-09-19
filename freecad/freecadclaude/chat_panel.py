@@ -759,8 +759,22 @@ class ChatWidget(QtWidgets.QWidget):
             def slotCreatedObject(self, _obj):
                 # A project document's key comes from the source file recorded
                 # on its objects, so it has none until the first one arrives.
-                # Cheap to re-check: _on_document_activated returns immediately
-                # when the key has not changed, which is almost always.
+                try:
+                    if widget._chat_key is None:
+                        widget._on_document_activated()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            def slotChangedObject(self, _obj, _prop):
+                # And the object is not tagged when it is created: an import
+                # inserts the object first and the source property is set once
+                # the import returns. slotCreatedObject therefore always sees
+                # an untagged object, and nothing else fires afterwards, so the
+                # key stayed None and the conversation was never filed.
+                #
+                # Guarded on the key still being unknown, so this costs one
+                # attribute test per property change once a document is known,
+                # which is what makes it affordable on a hook this busy.
                 try:
                     if widget._chat_key is None:
                         widget._on_document_activated()
@@ -832,6 +846,11 @@ class ChatWidget(QtWidgets.QWidget):
         from . import chat_store
 
         key = chat_store.doc_key(FreeCAD.ActiveDocument)
+        if key != self._chat_key:
+            # Quiet by default; the one line that matters when a conversation
+            # fails to come back is which key the document resolved to.
+            FreeCAD.Console.PrintLog(
+                "FreeCADClaude: document key %r -> %r\n" % (self._chat_key, key))
         if key == self._chat_key:
             return
 
