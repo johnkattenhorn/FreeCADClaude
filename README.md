@@ -2,9 +2,9 @@
 
 > **This is a fork.** Modified 2026-09-19 from
 > [tinkerindustries/FreeCADClaude](https://github.com/tinkerindustries/FreeCADClaude):
-> adds a **project mode** where a repo's Python scripts are the source of truth and
-> the document is their output, with `Bash` and a `reload_parts` tool to close the
-> loop. Unset `ProjectDir` and upstream's behaviour is unchanged.
+> it works out whether the open drawing was made by hand or built by a script,
+> and treats each accordingly. A built one's geometry changes go into its script,
+> which `Bash` runs and `reload_parts` brings back into the view.
 > See [`docs/FORK.md`](docs/FORK.md). LGPL-2.1-or-later, as upstream.
 >
 > Note: upstream's text below says `Edit` is disabled. It is not — `Write` and
