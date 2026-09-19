@@ -134,6 +134,65 @@ def _has_conversation(transcript):
         return True
 
 
+def _skill_search_dirs():
+    """Where the CLI looks for skills: its working directory, then the user's.
+
+    Not the addon. Its bundled skills sit beside it and are found only when the
+    CLI runs there, which it does not in project mode.
+    """
+    import os
+
+    from . import agent_config
+
+    dirs = []
+    cwd = agent_config.get_project_dir()
+    if not cwd:
+        try:
+            cwd = agent_config.session_workspace()
+        except Exception:  # noqa: BLE001
+            cwd = None
+    if cwd:
+        dirs.append(os.path.join(cwd, ".claude", "skills"))
+    dirs.append(os.path.join(os.path.expanduser("~"), ".claude", "skills"))
+    return dirs
+
+
+def _skill_is_reachable(skill_name):
+    """Whether the CLI would find `skill_name` from where it runs."""
+    import os
+
+    return any(os.path.isdir(os.path.join(d, skill_name))
+               for d in _skill_search_dirs())
+
+
+def _skills_help():
+    """The /help listing, reporting what can actually run rather than what is
+    bundled. Advertising a skill the CLI cannot find wastes a turn and reads as
+    a broken feature."""
+    reachable, missing = [], []
+    for name, (skill_name, blurb) in _SKILL_COMMANDS.items():
+        (reachable if _skill_is_reachable(skill_name) else missing).append(
+            (name, skill_name, blurb))
+
+    lines = []
+    if reachable:
+        lines.append("**Available skills** (explicit-invocation only):")
+        lines += [f"- `/{name}` — {blurb}" for name, _s, blurb in reachable]
+    else:
+        lines.append("**No skills are reachable from here.**")
+
+    if missing:
+        lines.append("")
+        lines.append("Bundled with the addon but NOT reachable, because the CLI "
+                     "looks for skills in its working directory and this "
+                     "conversation runs in the project:")
+        lines += [f"- `/{name}` ({skill}) — {blurb}" for name, skill, blurb in missing]
+        lines.append("")
+        lines.append("Link them into the project (or `~/.claude/skills/`) to "
+                     "use them here.")
+    return "\n".join(lines)
+
+
 def _format_tool_input(inp):
     """Render a tool's input args as a Markdown fragment for its detail entry."""
     if not inp:
@@ -632,15 +691,21 @@ class ChatWidget(QtWidgets.QWidget):
         rest = rest.strip()
 
         if cmd in ("", "help", "skills"):
-            lines = ["**Available skills** (explicit-invocation only):"]
-            for name, (_, blurb) in _SKILL_COMMANDS.items():
-                lines.append(f"- `/{name}` — {blurb}")
-            self._note("\n".join(lines))
+            self._note(_skills_help())
             return None
 
         if cmd not in _SKILL_COMMANDS:
             known = ", ".join(f"`/{name}`" for name in _SKILL_COMMANDS)
             self._note(f"*Unknown command `/{cmd}`. Available: {known}, `/help`.*")
+            return None
+
+        skill_name = _SKILL_COMMANDS[cmd][0]
+        if not _skill_is_reachable(skill_name):
+            self._note(
+                f"*`/{cmd}` is not available here. The CLI finds skills in its "
+                f"working directory, which in project mode is the project, and "
+                f"`{skill_name}` is bundled with this addon instead. `/help` "
+                f"lists what can actually run.*")
             return None
 
         skill_name, _ = _SKILL_COMMANDS[cmd]
