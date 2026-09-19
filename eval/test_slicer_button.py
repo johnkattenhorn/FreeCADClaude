@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""The Slicer button hands the model over: chat_panel._export_for_slicer.
+
+    PYTHONPATH=/usr/lib/freecad/lib python3 eval/test_slicer_button.py
+
+The button used to open a settings page and nothing else, which is not what a
+button marked Slicer suggests: it did not slice, and it said nothing about the
+part on screen. It now exports what is visible, oriented the way each part
+prints, and opens the slicer on it.
+
+Everything that can go wrong falls back to the settings page rather than
+failing silently, so each of those paths is checked here.
+"""
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import FreeCAD  # noqa: E402
+
+from freecad.freecadclaude import chat_panel, slicer_runner  # noqa: E402
+from freecad.freecadclaude.freecad_tools import print_export  # noqa: E402
+
+
+class _Shape:
+    def isNull(self):
+        return False
+
+
+class _ViewObject:
+    def __init__(self, visible=True):
+        self.Visibility = visible
+
+
+class _Obj:
+    def __init__(self, visible=True):
+        self.Shape = _Shape()
+        self.ViewObject = _ViewObject(visible)
+
+
+class _Doc:
+    Name = "cap"
+
+    def __init__(self, objects):
+        self.Objects = list(objects)
+
+
+class _Widget:
+    pass
+
+
+class ExportForSlicer(unittest.TestCase):
+    def setUp(self):
+        self._doc = getattr(FreeCAD, "ActiveDocument", None)
+        self._discover = slicer_runner.discover_binary
+        self._export = print_export.oriented_export
+        self.launched = []
+        print_export.oriented_export = lambda objs, path, **kw: open(path, "w").close()
+        slicer_runner.discover_binary = lambda *a, **kw: {
+            "path": "/usr/bin/true", "label": "Bambu Studio"}
+
+    def tearDown(self):
+        FreeCAD.ActiveDocument = self._doc
+        slicer_runner.discover_binary = self._discover
+        print_export.oriented_export = self._export
+
+    def _run(self, doc):
+        FreeCAD.ActiveDocument = doc
+        return chat_panel.ChatWidget._export_for_slicer(_Widget())
+
+    def test_visible_solids_are_exported_and_the_slicer_opened(self):
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(problem)
+        self.assertTrue(path.endswith("cap.3mf"), path)
+        self.assertTrue(os.path.isfile(path), "the export must exist")
+
+    def test_hidden_objects_are_not_sent(self):
+        """What is on screen is what goes to the slicer."""
+        path, problem = self._run(_Doc([_Obj(visible=False)]))
+        self.assertIsNone(path)
+        self.assertIn("nothing visible", problem)
+
+    def test_an_empty_document_falls_back(self):
+        path, problem = self._run(_Doc([]))
+        self.assertIsNone(path)
+        self.assertIn("nothing visible", problem)
+
+    def test_no_slicer_installed_falls_back(self):
+        slicer_runner.discover_binary = lambda *a, **kw: None
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(path)
+        self.assertIn("No slicer", problem)
+
+    def test_a_failed_export_falls_back_rather_than_raising(self):
+        def _boom(*_a, **_kw):
+            raise RuntimeError("meshing failed")
+
+        print_export.oriented_export = _boom
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(path)
+        self.assertIn("Could not export", problem)
+
+    def test_a_slicer_that_will_not_start_falls_back(self):
+        slicer_runner.discover_binary = lambda *a, **kw: {
+            "path": "/nonexistent/slicer", "label": "Bambu Studio"}
+        path, problem = self._run(_Doc([_Obj()]))
+        self.assertIsNone(path)
+        self.assertIn("Bambu Studio", problem)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

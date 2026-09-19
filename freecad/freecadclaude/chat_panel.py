@@ -366,6 +366,7 @@ class ChatWidget(QtWidgets.QWidget):
         self._think_has_text = False   # did the current reasoning burst stream real text (vs. redacted)?
         self._tool_entries = {}       # tool_use_id -> CollapsibleSection, awaiting its result
         self._status_text = ""        # last worker status ("ready"/"closed"), shown when idle
+        self._attachments = []        # files picked for the next message only
         self._chat_key = None         # document this conversation belongs to (chat_store.doc_key)
         self._restored_session_id = None  # Claude session read from disk, adopted by the next worker
         # Coalesces rapid streaming deltas into ~12 renders/sec instead of one
@@ -447,9 +448,9 @@ class ChatWidget(QtWidgets.QWidget):
         self.effort_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.effort_combo.currentIndexChanged.connect(self._on_effort_changed)
         control_row.addWidget(self.effort_combo)
-        self.files_button = QtWidgets.QPushButton("📁 Open Files", controls)
+        self.files_button = QtWidgets.QPushButton("📎 Attach", controls)
         self.files_button.setToolTip("Open the FreeCADClaude captures/exports folder")
-        self.files_button.clicked.connect(self._open_artifacts)
+        self.files_button.clicked.connect(self._on_attach)
         control_row.addWidget(self.files_button)
         self.device_button = QtWidgets.QPushButton("📱 Connect Mobile", controls)
         self.device_button.setToolTip(
@@ -677,7 +678,7 @@ class ChatWidget(QtWidgets.QWidget):
         self.input.clear()
         self._add_entry("you", html.escape(text))
         self._set_busy(True)
-        self._worker.submit(cli_text)
+        self._worker.submit(self._attachment_preamble() + cli_text)
 
     def _expand_slash_command(self, text):
         """Parse a leading "/command rest..." input.
@@ -1092,6 +1093,7 @@ class ChatWidget(QtWidgets.QWidget):
         not the child.
         """
         from . import freecad_tools, slicer_runner
+        from .freecad_tools import print_export
 
         try:
             slicer_runner.reset_session()
@@ -1139,6 +1141,49 @@ class ChatWidget(QtWidgets.QWidget):
         agent_config.save_effort(effort)
         if self._worker is not None:
             self._worker.set_effort(effort)
+
+    def _on_attach(self):
+        """Pick files to hand to the next turn.
+
+        Copied into the session folder rather than referenced where they sit.
+        The CLI can only read inside its working directory and whatever is
+        passed with --add-dir, so a path in ~/Downloads is unreadable to it; and
+        copying keeps the attachment with the conversation it belongs to.
+        """
+        import shutil
+
+        from . import freecad_tools
+
+        paths, _filter = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Attach files for Claude", os.path.expanduser("~"))
+        if not paths:
+            return
+
+        folder = os.path.join(freecad_tools.session_dir(), "attachments")
+        os.makedirs(folder, exist_ok=True)
+        for source in paths:
+            target = os.path.join(folder, os.path.basename(source))
+            try:
+                if os.path.abspath(source) != os.path.abspath(target):
+                    shutil.copy2(source, target)
+            except OSError as exc:
+                self._note(f"*Could not attach {os.path.basename(source)}: {exc}*")
+                continue
+            self._attachments.append(target)
+
+        if self._attachments:
+            names = ", ".join(f"`{os.path.basename(p)}`" for p in self._attachments)
+            self._note(f"📎 Attached for the next message: {names}")
+
+    def _attachment_preamble(self):
+        """Lines naming the attachments, prepended to the next message only."""
+        if not self._attachments:
+            return ""
+        lines = ["The user attached these files. Read them before answering; "
+                 "unpack an archive with Bash if you need what is inside."]
+        lines += ["- %s" % path for path in self._attachments]
+        self._attachments = []
+        return "\n".join(lines) + "\n\n"
 
     def _open_artifacts(self):
         """Open the FreeCADClaude captures/exports folder in the file manager."""
@@ -1208,13 +1253,81 @@ class ChatWidget(QtWidgets.QWidget):
             pass
 
     def _on_slicer_settings(self):
-        """Open the slicer settings page -- the same one ``view_gcode`` opens.
+        """Hand the model to the slicer, or open the settings page if it cannot.
 
-        The printer, nozzle, process and filament are chosen there, and that
-        choice comes before the first slice, so it has to be reachable without
-        asking Claude for a slice first. The server is on 127.0.0.1 and stops
-        with FreeCAD, which is why this needs no pairing dialog and no stop
-        button of its own.
+        The button used to open only a settings page, which is not what anyone
+        expects of a button marked Slicer: it does not slice, and it says
+        nothing about the part on screen. So it exports what is visible and
+        opens Bambu Studio on it, which is the convenience worth having -- the
+        model is already loaded and ready to arrange.
+
+        Falls back to the settings page when no slicer is installed, or when
+        there is nothing to export. The printer, nozzle, process and filament
+        are chosen there, and that choice has to be reachable before the first
+        slice.
+        """
+        exported, problem = self._export_for_slicer()
+        if exported:
+            self._note(
+                f"🖨️ **Opening the slicer** on `{os.path.basename(exported)}`."
+                "\n\nThis only loads the model. Ask for a slice and you get "
+                "layer count, print time by feature and filament back here."
+            )
+            return
+        self._note(f"*{problem} Opening the slicer settings instead.*")
+        self._open_slicer_settings()
+
+    def _export_for_slicer(self):
+        """(path, None) once the visible solids are open in the slicer.
+
+        Oriented the way each part prints, using the same build directions a
+        slice would, so what opens is arranged rather than lying on its side.
+        """
+        import subprocess
+
+        from . import freecad_tools, slicer_runner
+        from .freecad_tools import print_export
+
+        try:
+            import FreeCAD
+        except ImportError:  # pragma: no cover - not reachable inside FreeCAD
+            return None, "FreeCAD is not available."
+
+        doc = FreeCAD.ActiveDocument
+        objs = [o for o in (getattr(doc, "Objects", None) or ())
+                if getattr(o, "Shape", None) and not o.Shape.isNull()
+                and getattr(getattr(o, "ViewObject", None), "Visibility", True)]
+        if not objs:
+            return None, "There is nothing visible to send."
+
+        # discover_binary returns a dict describing the slicer, not a path.
+        found = slicer_runner.discover_binary()
+        binary = (found or {}).get("path")
+        label = (found or {}).get("label") or "the slicer"
+        if not binary:
+            return None, "No slicer was found on this machine."
+
+        name = (getattr(doc, "Name", None) or "model") + ".3mf"
+        path = os.path.join(freecad_tools.session_dir(), name)
+        try:
+            print_export.oriented_export(objs, path)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Could not export the model ({exc!r})."
+
+        try:
+            # Detached: the slicer outlives this call, and a slicer that dies
+            # with FreeCAD would be worse than useless.
+            subprocess.Popen([binary, path], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Could not start {label} ({exc!r})."
+        return path, None
+
+    def _open_slicer_settings(self):
+        """The settings page -- the same one ``view_gcode`` opens.
+
+        On 127.0.0.1 and it stops with FreeCAD, which is why it needs no
+        pairing dialog and no stop button of its own.
         """
         from . import freecad_tools
 
