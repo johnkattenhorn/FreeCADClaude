@@ -756,6 +756,17 @@ class ChatWidget(QtWidgets.QWidget):
                 except Exception:  # noqa: BLE001
                     pass
 
+            def slotCreatedObject(self, _obj):
+                # A project document's key comes from the source file recorded
+                # on its objects, so it has none until the first one arrives.
+                # Cheap to re-check: _on_document_activated returns immediately
+                # when the key has not changed, which is almost always.
+                try:
+                    if widget._chat_key is None:
+                        widget._on_document_activated()
+                except Exception:  # noqa: BLE001
+                    pass
+
         self._doc_observer = _Observer()
         try:
             FreeCAD.addDocumentObserver(self._doc_observer)
@@ -806,7 +817,16 @@ class ChatWidget(QtWidgets.QWidget):
             self._note(_capability_notice())
 
     def _on_document_activated(self, *_args):
-        """The user switched drawing: save what was on screen, show the new one's."""
+        """Follow the active document: save what was on screen, show the new one's.
+
+        Also runs when a document GAINS its identity rather than when one is
+        swapped for another, which is the common case here and was missed first
+        time round. slotActivateDocument fires when App.newDocument() is called
+        -- before anything is in it. A project document has no FileName ever, so
+        its key comes from the source file recorded on its objects, and at that
+        moment it has none: the key came back None, nothing was ever filed, and
+        nothing re-ran once the import arrived.
+        """
         import FreeCAD
 
         from . import chat_store
@@ -814,11 +834,25 @@ class ChatWidget(QtWidgets.QWidget):
         key = chat_store.doc_key(FreeCAD.ActiveDocument)
         if key == self._chat_key:
             return
-        # Going from an unsaved document to no key at all is not a switch: an
-        # unsaved document's conversation lives only in this transcript, so
-        # clearing it on a spurious activation would silently destroy it.
+
+        # Nothing identifiable either side: an unsaved document's conversation
+        # lives only in this transcript, so clearing it would destroy it.
         if key is None and self._chat_key is None:
             return
+
+        # A document that has just acquired a key -- objects imported, or Save
+        # As -- is the SAME conversation, now with somewhere to live. Adopt it
+        # and file what is already on screen instead of replacing it.
+        if self._chat_key is None and key is not None:
+            self._chat_key = key
+            stored_session, stored_entries = chat_store.load(key)
+            if stored_entries and not self.transcript_view.entries():
+                self._load_chat(key)
+            else:
+                self._restored_session_id = self._restored_session_id or stored_session
+                self._persist_chat()
+            return
+
         self._persist_chat()
         self._load_chat(key)
 
