@@ -286,7 +286,9 @@ def _pre_existing_failure_note(new):
 #: Tools that can mutate document geometry -- the only ones worth snapshotting
 #: for a before/after volume diff (every other tool is read-only, so its diff is
 #: always empty). run_python is the sole document-mutating tool.
-MUTATING_TOOLS = {"run_python"}
+# reload_parts replaces objects wholesale, so the same before/after shape
+# comparison that guards run_python applies to it.
+MUTATING_TOOLS = {"run_python", "reload_parts"}
 
 #: TypeId substrings identifying material-removing PartDesign features. Matched
 #: by substring so the whole family (Pocket/Groove/Hole plus every Subtractive*

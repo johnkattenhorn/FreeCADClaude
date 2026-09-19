@@ -128,6 +128,10 @@ class AgentWorker(QtCore.QObject):
             argv += ["--tools", *builtin]
         else:
             argv += ["--tools", ""]
+        # Project mode: cwd is the project, so the session folder (captures,
+        # exports, slices) has to be reachable as well.
+        for extra in cfg.get("extra_dirs") or []:
+            argv += ["--add-dir", extra]
         argv += [
             "--strict-mcp-config",       # ignore the user's own MCP servers
             "--mcp-config", cfg["mcp_config"],   # expose our FreeCAD tools

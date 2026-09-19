@@ -99,6 +99,11 @@ from .tools_notes import (
     _run_document_notes,
     _run_set_print_direction,
 )
+from .tools_project import (
+    _RELOAD_PARTS_SCHEMA,
+    _precheck_reload_parts,
+    _run_reload_parts,
+)
 from .tools_python import _RUN_PYTHON_SCHEMA, _precheck_python, _run_python
 from .tools_slice import (  # two names re-exported for chat_panel
     _READ_SLICE_RESULT_SCHEMA,
@@ -175,6 +180,11 @@ TOOLS = {
         "schema": _RUN_PYTHON_SCHEMA,
         "run": _run_python,
         "precheck": _precheck_python,
+    },
+    "reload_parts": {
+        "schema": _RELOAD_PARTS_SCHEMA,
+        "run": _run_reload_parts,
+        "precheck": _precheck_reload_parts,
     },
     "script_library": {
         "schema": _SCRIPT_LIBRARY_SCHEMA,
