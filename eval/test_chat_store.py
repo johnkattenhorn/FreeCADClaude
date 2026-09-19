@@ -33,23 +33,56 @@ class _Store:
         chat_store._store_path = self._real
 
 
+class _Obj:
+    """A document object carrying the source tag reload_parts writes."""
+
+    def __init__(self, source):
+        setattr(self, "FCCSourceFile", source)
+
+
 class _Doc:
-    def __init__(self, filename):
+    def __init__(self, filename, objects=()):
         self.FileName = filename
+        self.Objects = list(objects)
 
 
 class DocKey(unittest.TestCase):
     def test_saved_document_keys_on_its_path(self):
         self.assertEqual(chat_store.doc_key(_Doc("/tmp/a.FCStd")), "/tmp/a.FCStd")
 
-    def test_unsaved_and_missing_have_no_key(self):
-        """An unsaved document has no stable identity: Unnamed today and
+    def test_unsaved_and_empty_has_no_key(self):
+        """A document with nothing in it has no identity: Unnamed today and
         Unnamed after a restart are the same string and mean different files."""
         self.assertIsNone(chat_store.doc_key(_Doc("")))
         self.assertIsNone(chat_store.doc_key(None))
 
+    def test_an_unsaved_project_document_keys_on_what_built_it(self):
+        """The regression this fallback exists for. view.FCMacro opens a fresh
+        document and imports a STEP, so FileName is always empty -- and a rule
+        that stores nothing for unsaved documents stored nothing at all for the
+        one workflow project mode is for."""
+        doc = _Doc("", [_Obj("/home/j/cad/out/cap.step")])
+        self.assertEqual(chat_store.doc_key(doc), "/home/j/cad/out/cap.step")
+
+    def test_a_saved_path_still_wins_over_the_source(self):
+        doc = _Doc("/home/j/cad/real.FCStd", [_Obj("/home/j/cad/out/cap.step")])
+        self.assertEqual(chat_store.doc_key(doc), "/home/j/cad/real.FCStd")
+
+    def test_two_parts_share_one_key_rather_than_flipping(self):
+        doc = _Doc("", [_Obj("/p/b.step"), _Obj("/p/a.step")])
+        self.assertEqual(chat_store.doc_key(doc), "/p/a.step|/p/b.step")
+        reordered = _Doc("", [_Obj("/p/a.step"), _Obj("/p/b.step")])
+        self.assertEqual(chat_store.doc_key(reordered), chat_store.doc_key(doc),
+                         "object order must not change the key")
+
+    def test_untagged_objects_do_not_make_a_key(self):
+        doc = _Doc("", [_Obj("")])
+        self.assertIsNone(chat_store.doc_key(doc))
+
     def test_key_is_absolute(self):
         self.assertTrue(os.path.isabs(chat_store.doc_key(_Doc("rel/b.FCStd"))))
+        self.assertTrue(os.path.isabs(
+            chat_store.doc_key(_Doc("", [_Obj("rel/out/c.step")]))))
 
 
 class RoundTrip(unittest.TestCase):

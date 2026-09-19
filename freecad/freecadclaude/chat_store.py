@@ -51,16 +51,39 @@ def _store_path():
 
 
 def doc_key(document):
-    """The key a document files its conversation under, or None for unsaved.
+    """The key a document files its conversation under, or None.
 
-    FileName is empty until a document has been saved, and an unsaved document
-    has no stable identity to key on -- Unnamed, Unnamed001 and the next one
-    after a restart are all the same string and none of them mean anything.
+    Normally the saved path. FileName is empty until a document has been saved,
+    and an unsaved document has no stable identity of its own -- Unnamed,
+    Unnamed001 and whatever the next restart calls it are all the same string
+    and none of them mean anything.
+
+    But a project-mode document usually IS unsaved, and always will be: it was
+    built by a script, it is output, and there is nothing to save. It still has
+    a stable identity -- the file it was imported from, which reload_parts
+    records on each object it brings in. Keying on that is what makes a
+    conversation about a part survive a restart, which is the whole point, and
+    it was missed first time round because the rule about unsaved documents was
+    applied to the one case it does not fit.
+
+    Several sources are joined, so a document holding two parts keeps one
+    conversation about both rather than flipping between them as objects are
+    selected.
     """
     if document is None:
         return None
     name = (getattr(document, "FileName", "") or "").strip()
-    return os.path.abspath(name) if name else None
+    if name:
+        return os.path.abspath(name)
+
+    from .freecad_tools.tools_project import _SOURCE_PROP
+
+    sources = set()
+    for obj in getattr(document, "Objects", None) or ():
+        source = (getattr(obj, _SOURCE_PROP, "") or "").strip()
+        if source:
+            sources.add(os.path.abspath(source))
+    return "|".join(sorted(sources)) if sources else None
 
 
 def _read():
