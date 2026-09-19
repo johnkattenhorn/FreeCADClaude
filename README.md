@@ -1,18 +1,39 @@
 # FreeCADClaude (FreeCAD addon)
 
-> **This is a fork.** Modified 2026-09-19 from
-> [tinkerindustries/FreeCADClaude](https://github.com/tinkerindustries/FreeCADClaude):
-> it works out whether the open drawing was made by hand or built by a script,
-> and treats each accordingly. A built one's geometry changes go into its script,
-> which `Bash` runs and `reload_parts` brings back into the view.
-> See [`docs/FORK.md`](docs/FORK.md). LGPL-2.1-or-later, as upstream.
->
-> Note: upstream's text below says `Edit` is disabled. It is not — `Write` and
-> `Edit` have been in `_WRITE_TOOLS` for some time. Only `Bash` was off.
-
 A FreeCAD workbench that docks a **Claude chat panel** on the right-hand side
 of the main window and lets Claude act on the active document through a curated
 set of FreeCAD tools.
+
+## This is a fork
+
+The original is **[tinkerindustries/FreeCADClaude](https://github.com/tinkerindustries/FreeCADClaude)**,
+and almost everything here is its author's work: the panel, the tool bridge, the
+offscreen capture path, the phone canvas, the Bambu Studio integration and the
+toolpath viewer. Forked 2026-09-19. LGPL-2.1-or-later, as upstream.
+
+What this fork adds:
+
+- **It works out which kind of drawing is open.** One a script built is
+  treated as output: geometry changes go into the script, which `Bash` runs and
+  `reload_parts` brings back into the view. One somebody drew is changed
+  directly, as upstream does. Detected per document, not configured.
+- **`clip_view`** cuts the model open in the user's own 3D view and leaves it
+  cut, so they can orbit the section and click the exposed faces, instead of
+  being shown a picture of a view they are not looking at.
+- **Conversations survive a restart**, filed under the document they are about,
+  carrying Claude's session id so a later question continues rather than
+  restarts. `scripts/recover_chats.py` rebuilds them from the logs.
+- **Attachments.** Pick files and the next message carries them.
+- **Five segfault fixes.** Captures borrow the user's view rather than creating
+  and destroying one, the selection is held by name across a capture rather
+  than by object, and a clip plane's lifetime is owned rather than left to
+  chance. See [`docs/FORK.md`](docs/FORK.md); the selection one is a bug in
+  upstream and has been reported there.
+
+Corrections to upstream's text below, kept because the rest of it is accurate
+and worth reading: it says `Edit` is disabled — it is not, `Write` and `Edit`
+have been in `_WRITE_TOOLS` for some time. `Bash` was the one that was off, and
+in this fork it is on.
 
 *Unofficial community project — not affiliated with, endorsed by, or sponsored
 by Anthropic. "Claude" is a trademark of Anthropic, PBC. It drives your own
@@ -62,7 +83,7 @@ Pro/Max plan).
 ```powershell
 npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
 claude                                      # log in once (opens a browser), then exit
-git clone https://github.com/mrgeoffrich/FreeCADClaude `
+git clone <this fork's URL> `
   "$env:APPDATA\FreeCAD\v1-1\Mod\FreeCADClaude"
 ```
 
@@ -70,7 +91,7 @@ git clone https://github.com/mrgeoffrich/FreeCADClaude `
 ```bash
 npm install -g @anthropic-ai/claude-code   # install the Claude Code CLI
 claude                                      # log in once (opens a browser), then exit
-git clone https://github.com/mrgeoffrich/FreeCADClaude \
+git clone <this fork's URL> \
   "$HOME/Library/Application Support/FreeCAD/v1-1/Mod/FreeCADClaude"
 ```
 
@@ -132,7 +153,8 @@ first, then:
 2. Open its configuration — the **⚙ gear** icon in the Addon Manager window (or
    **Edit → Preferences → Addon Manager**) — and under **Custom repositories**
    add a new entry:
-   - **Repository URL:** `https://github.com/mrgeoffrich/FreeCADClaude`
+   - **Repository URL:** this fork's URL (upstream is
+     `https://github.com/tinkerindustries/FreeCADClaude`)
    - **Branch:** `main`
 3. Close preferences; back in the Addon Manager the addon now appears in the
    list. Select **FreeCADClaude** and click **Install**.
@@ -176,7 +198,7 @@ The result should be `…/Mod/FreeCADClaude/` containing `Init.py`, `InitGui.py`
 
 - **git clone** straight into the Mod dir:
   ```bash
-  git clone https://github.com/mrgeoffrich/FreeCADClaude "<Mod dir>/FreeCADClaude"
+  git clone <this fork's URL> "<Mod dir>/FreeCADClaude"
   ```
 - **Copy** the folder into the Mod dir manually.
 - **Windows dev** — from a clone, `pwsh -File deploy.ps1` copies it into the
